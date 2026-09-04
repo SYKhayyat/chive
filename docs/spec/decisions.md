@@ -1,36 +1,73 @@
 # Decisions — chive
 
-Every open question lives here with a status. Do not answer one in code.
+Every open question lives here with a status. Do not answer an open question in code. When a question is answered, the ruling ships in the same commit — into `decisions.md`, and into `target-state.md` plus `why.md` if it is a rule rather than a detail.
 
-| ID | Question | Status |
-|----|----------|--------|
-| D1 | TOML schema design for state export | open |
-| D2 | Category extension lists vs MIME-type detection | open |
-| D3 | Tauri frontend structure (single window vs multi-panel) | open |
-| D4 | How to handle `.tar.gz` and other compound extensions | open |
-| D5 | Whether `chive clean` should prompt for confirmation or have a `--force` flag | open |
-| D6 | Whether the SQLite DB and TOML file should be kept in sync automatically or independently | open |
-| D7 | Whether to use `egui`/`iced` instead of Tauri | open |
-| D8 | Project license | open |
+## Open questions
 
-## Decision record
+| ID | Question | Status | Notes |
+|----|----------|--------|-------|
+| D1 | Implementation language — Rust or Common Lisp | **open** | Shall proves Rust can deliver the needed flexibility. But CL has genuine REPL advantages. Owner to decide. |
+| D2 | Restore manager: call restore periodically or when N files go missing | **open** | Non-goal for MVP. The catalog data model does not preclude a manager later. |
+| D3 | What counts as "absent" on a target machine | **open** | MVP: restore operates on named files or all restorable. Absence detection is D2 territory. |
+| D4 | Where the off-box catalog lives | **open** | MVP: user brings their own git/storage. chive produces the TOML. |
+| D5 | Cross-platform recipes: per-OS variants or one portable form | **open** | MVP: one recipe string per file. Per-OS variants can be added later. |
+| D7 | Category taxonomy: extension lists vs MIME-type detection | **open** | MVP: extension lists. MIME can be added without changing the catalog format. |
+| D12 | GUI framework: Tauri vs egui/iced | **open** | MVP: CLI only. GUI is phase 2. |
+| D13 | Project license | **open** | Not blocking the build. |
 
-### D0 — Framing: file lifecycle manager, not recovery tool
-- **Status**: decided
-- **Why**: The user removed deleted-file detection and added GUI + declarative state. The product is a catalog and lifecycle manager, not a recovery tool.
-- **Ruling**: All docs and future code must frame chive as a file lifecycle manager.
+## Ruled decisions
 
-### D1 — Language: Rust
-- **Status**: decided
-- **Why**: User chose Rust with AI assistance. Shall already has the full Rust pipeline.
-- **Ruling**: Rust only. No Python, Java, or Go.
+### D0 — Framing: reconstruction engine
 
-### D2 — GUI framework: Tauri
-- **Status**: decided
-- **Why**: Tauri provides native desktop apps on all three platforms with a Rust backend. User approved.
-- **Ruling**: Tauri for GUI. All slow parts in Rust.
+- **Status**: ruled
+- **Why**: The product's value is the restore. "Recovery tool" implied byte-level resurrection; "lifecycle manager" buried the point. Reconstruction matches the mechanism (recipe, not bytes).
+- **Ruling**: chive is framed as a reconstruction engine. Byte-level recovery and inode forensics are non-goals.
 
-### D3 — Storage: SQLite + TOML export/import
-- **Status**: decided
-- **Why**: User wants both database performance and versionable state files. Shall uses TOML for config.
-- **Ruling**: SQLite as working state, TOML for export/import.
+### D1 (reopened) — Language
+
+- **Status**: open (reopened)
+- **Why reopened**: Rust was chosen early on the assumption of "extreme speed." After reading Shall's code, the flexibility argument for CL does not hold: Shall achieves its flexibility via data-file adapters and a REPL that is explicitly "a thin front end over the one parser" (`src/app/adapters.rs`, `src/app/repl.rs`). chive's recipes are the same shape. But CL's REPL is genuinely useful for interactive exploration. The tradeoff is real.
+- **Considerations**: chive is Shall's sibling (may share code). Tauri forces Rust in the GUI tier. CL shipping a single binary to 3 platforms is harder. CL's REPL advantage can be replicated with a Rust REPL (or `eval | jq` pattern from Shall).
+- **Ruling**: none yet. The spec is language-independent. Current working assumption: Rust.
+
+### D6 — Restore addressing: by relative path
+
+- **Status**: ruled
+- **Why**: Opaque IDs are not portable across machines. Relative paths are human-readable, git-friendly, and match how the catalog is used (you see a path, you restore it).
+- **Ruling**: All restore commands use relative paths. Internally the path is the primary key.
+
+### D8 — Compound extensions
+
+- **Status**: ruled
+- **Why**: `.tar.gz` and `.jpeg` are common. The last-extension rule gets them wrong. The list is short and stable.
+- **Ruling**: Special-case `.tar.gz`, `.tar.xz`, `.tar.bz2` as archive. `.jpeg` as alias for `.jpg`.
+
+### D9 — Storage authority
+
+- **Status**: ruled
+- **Why**: Dual stores (SQLite + TOML) create ambiguity about which is the source of truth. Shall's lesson: the file is the truth.
+- **Ruling**: The TOML catalog file is the source of truth. SQLite is a derived working index rebuilt by `import` or `scan`. The TOML is what gets committed off-box.
+
+### D10 — Clean confirmation
+
+- **Status**: ruled
+- **Why**: Deletion must be previewed and confirmed. This mirrors Shall's removal guard (U26 rule).
+- **Ruling**: `chive clean` requires confirmation unless `--force`. `--dry-run` prints what would be removed.
+
+### D11 — TOML schema
+
+- **Status**: ruled for MVP
+- **Why**: An AI cannot build without a concrete schema. The schema is defined in `target-state.md` and can evolve.
+- **Ruling**: The TOML schema in `target-state.md` is the MVP schema. Fields may be added later; fields are never removed (forward-compatible).
+
+### D14 — Status assignment: orphaned vs not-restorable
+
+- **Status**: ruled
+- **Why**: Without this split, `clean` is either too aggressive or too conservative. Separating them makes `clean` safe by default.
+- **Ruling**: `orphaned` is the automatic default for files with no provenance. `not-restorable` is only assigned by explicit owner action (`chive protect`). Clean removes orphaned; clean never touches not-restorable.
+
+### D15 — Restore never clobbers
+
+- **Status**: ruled
+- **Why**: Reconstruction fills gaps. Overwriting existing files is a different operation with different risks.
+- **Ruling**: If `{dest}` already exists, chive refuses to restore that file. The user must delete or move it first.
