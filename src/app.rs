@@ -160,11 +160,9 @@ mod app_tests {
         assert!(!c.scanned_at.is_empty());
         assert_eq!(c.files().len(), 1);
         assert_eq!(c.files()[0].path, "notes.md");
-        // dry-run runner reports happy provenance, but notes.md has none tied to
-        // a program, so the file is orphaned unless a package claimed it.
-        if c.files()[0].status == Status::Orphaned {
-            // expected given no package managers are present in dry-run
-        }
+        // No package manager is present in dry-run and there is no .git, so
+        // the file is orphaned.
+        assert_eq!(c.files()[0].status, Status::Orphaned);
     }
 
     #[test]

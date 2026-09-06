@@ -243,6 +243,45 @@ fn plan_and_restore_preview_and_rebuild() {
 }
 
 #[test]
+fn status_filter_selects_by_status() {
+    let env = Env::new();
+    env.put("done.md", "x");
+    env.put("temp~", "y");
+    env.chive()
+        .arg("scan")
+        .arg(env.tree.path())
+        .assert()
+        .success();
+    env.chive()
+        .args(["teach", "done.md"])
+        .args(["--method", "echo X > '{dest}'"])
+        .assert()
+        .success();
+
+    let restorable = env
+        .chive()
+        .arg("status")
+        .arg("--restorable")
+        .assert()
+        .success();
+    let s = String::from_utf8_lossy(&restorable.get_output().stdout);
+    assert!(s.contains("done.md"));
+    assert!(
+        !s.contains("temp~"),
+        "--restorable hides temporary files:\n{s}"
+    );
+
+    let temp = env
+        .chive()
+        .arg("status")
+        .arg("--temporary")
+        .assert()
+        .success();
+    let s = String::from_utf8_lossy(&temp.get_output().stdout);
+    assert!(s.contains("temp~"));
+}
+
+#[test]
 fn missing_catalog_errors_explicitly() {
     let env = Env::new();
     env.chive().arg("status").assert().code(4);

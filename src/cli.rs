@@ -39,9 +39,18 @@ enum Command {
     },
     /// List catalog entries, optionally filtered by status.
     Status {
-        /// Only show entries in this status.
-        #[arg(long, value_enum)]
-        status: Option<StatusArg>,
+        /// Show only restorable entries.
+        #[arg(long, conflicts_with_all = ["not_restorable", "temporary_status", "orphaned"])]
+        restorable: bool,
+        /// Show only not-restorable entries.
+        #[arg(long = "not-restorable", id = "not_restorable", conflicts_with_all = ["restorable", "temporary_status", "orphaned"])]
+        not_restorable: bool,
+        /// Show only temporary entries.
+        #[arg(long, id = "temporary_status", conflicts_with_all = ["restorable", "not_restorable", "orphaned"])]
+        temporary: bool,
+        /// Show only orphaned entries.
+        #[arg(long, conflicts_with_all = ["restorable", "not_restorable", "temporary_status"])]
+        orphaned: bool,
     },
     /// Show catalog statistics.
     Stats,
@@ -125,15 +134,6 @@ enum PlanCmd {
     },
 }
 
-/// Filter for `status`.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum StatusArg {
-    Restorable,
-    NotRestorable,
-    Temporary,
-    Orphaned,
-}
-
 /// The target status for `mark`.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum MarkStatus {
@@ -190,7 +190,25 @@ pub fn run(argv: impl IntoIterator<Item = String>) -> Result<i32> {
 
     let code = match cli.command {
         Command::Scan { path, ignore } => cmd_scan(&app, &path, &ignore)?,
-        Command::Status { status } => cmd_status(&app, status)?,
+        Command::Status {
+            restorable,
+            not_restorable,
+            temporary,
+            orphaned,
+        } => cmd_status(
+            &app,
+            if restorable {
+                Some(Status::Restorable)
+            } else if not_restorable {
+                Some(Status::NotRestorable)
+            } else if temporary {
+                Some(Status::Temporary)
+            } else if orphaned {
+                Some(Status::Orphaned)
+            } else {
+                None
+            },
+        )?,
         Command::Stats => cmd_stats(&app)?,
         Command::Plan { sub } => match sub {
             PlanCmd::Restore {
@@ -250,16 +268,10 @@ fn print_scan_summary(c: &Catalog) {
     println!("  {orphaned:>8} orphaned");
 }
 
-fn cmd_status(app: &App, filter: Option<StatusArg>) -> Result<i32> {
+fn cmd_status(app: &App, filter: Option<Status>) -> Result<i32> {
     let catalog = app.load_catalog()?;
     for entry in catalog.files() {
-        let wanted = match filter {
-            None => true,
-            Some(StatusArg::Restorable) => entry.status == Status::Restorable,
-            Some(StatusArg::NotRestorable) => entry.status == Status::NotRestorable,
-            Some(StatusArg::Temporary) => entry.status == Status::Temporary,
-            Some(StatusArg::Orphaned) => entry.status == Status::Orphaned,
-        };
+        let wanted = filter.is_none_or(|f| entry.status == f);
         if !wanted {
             continue;
         }
