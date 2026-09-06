@@ -9,10 +9,10 @@
 use std::path::{Path, PathBuf};
 
 // Declare every integration test file here.
-// Add a line as files land.
+mod cli_tests;
 
 /// The files that *are* wired in — the single source of truth for the suite.
-const DECLARED: &[&str] = &[];
+const DECLARED: &[&str] = &["cli_tests"];
 
 /// Walk `tests/` and fail on any `*_tests.rs` not declared above. This is the
 /// guard that keeps `autotests = false` honest.

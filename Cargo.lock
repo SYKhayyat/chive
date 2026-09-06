@@ -149,6 +149,7 @@ dependencies = [
  "assert_cmd",
  "chrono",
  "clap",
+ "libc",
  "predicates",
  "pretty_assertions",
  "regex",

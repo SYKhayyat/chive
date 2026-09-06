@@ -14,7 +14,10 @@
 //! - [`store`] — where chive keeps its state.
 //! - [`provenance`] — how chive infers a recipe for a file.
 
+pub mod action;
+pub mod app;
 pub mod catalog;
+pub mod cli;
 pub mod config;
 pub mod error;
 pub mod model;

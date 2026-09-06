@@ -15,6 +15,7 @@
 //!   written as command strings in the catalog, so they are *by definition*
 //!   shell; this is the one place a shell is used.
 
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::error::Result;
@@ -44,6 +45,11 @@ pub trait Runner {
 
     /// Whether `program` is present on `PATH`.
     fn exists(&self, program: &str) -> bool;
+
+    /// Remove the file at `path`. Returns whether it was removed. The real
+    /// runner holds off under dry-run and reports non-removal via a normal
+    /// `false`, never an error: a missing file is simply "nothing to remove".
+    fn remove_file(&self, path: &Path) -> bool;
 }
 
 /// Executes commands for real. `dry_run` makes every command a no-op that
@@ -133,6 +139,13 @@ impl Runner for Real {
             .output()
             .is_ok()
     }
+
+    fn remove_file(&self, path: &Path) -> bool {
+        if self.dry_run {
+            return false; // preview: report nothing was removed, touch nothing
+        }
+        std::fs::remove_file(path).is_ok()
+    }
 }
 
 impl Mock {
@@ -203,6 +216,11 @@ impl Runner for Mock {
 
     fn exists(&self, program: &str) -> bool {
         self.programs.iter().any(|p| p == program)
+    }
+
+    fn remove_file(&self, path: &Path) -> bool {
+        self.record(format!("rm {}", path.display()));
+        path.exists() // model dry-run honestly: only "removes" what exists
     }
 }
 

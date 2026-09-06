@@ -1,7 +1,14 @@
-use chive::error::Result;
+use std::process::ExitCode;
 
-fn main() -> Result<()> {
-    // Placeholder entry point; the real CLI lands as commands are built.
-    println!("chive — reconstruction engine (build in progress)");
-    Ok(())
+use chive::cli::run;
+
+fn main() -> ExitCode {
+    // `run` expects the full argv, since clap reads the program name from it.
+    match run(std::env::args()) {
+        Ok(code) => ExitCode::from(code as u8),
+        Err(e) => {
+            eprintln!("chive: {e}");
+            ExitCode::from(e.exit_code() as u8)
+        }
+    }
 }

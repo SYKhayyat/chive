@@ -70,6 +70,11 @@ impl PackageDetector {
             })
             .collect()
     }
+
+    /// The names of every loaded manager, in priority order.
+    pub fn manager_names(&self) -> Vec<&str> {
+        self.managers.iter().map(|c| c.spec.name.as_str()).collect()
+    }
 }
 
 fn probe(
