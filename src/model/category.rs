@@ -96,7 +96,8 @@ fn classify_single(ext: &str) -> Option<Category> {
         "pdf" | "doc" | "docx" | "txt" | "md" | "rtf" | "odt" | "xls" | "xlsx" | "ppt" | "pptx"
         | "tex" => Some(Category::Document),
         // image
-        "png" | "jpg" | "gif" | "svg" | "webp" | "bmp" | "tiff" | "tif" => Some(Category::Image),
+        "png" | "jpg" | "gif" | "svg" | "webp" | "bmp" | "tiff" | "tif" | "nef" | "arw" | "cr2"
+        | "dng" | "orf" | "raw" => Some(Category::Image),
         // code
         "rs" | "py" | "ts" | "js" | "go" | "cpp" | "c" | "h" | "java" | "rb" | "lua" | "sh"
         | "zsh" | "bash" | "el" | "nix" => Some(Category::Code),
@@ -141,6 +142,13 @@ mod category_tests {
     fn jpeg_is_alias_for_jpg() {
         is("a.jpeg", Category::Image);
         is("b.jpg", Category::Image);
+    }
+
+    #[test]
+    fn camera_raw_formats_are_images() {
+        is("DSC_0001.nef", Category::Image);
+        is("img.arw", Category::Image);
+        is("IMG_0001.cr2", Category::Image);
     }
 
     #[test]

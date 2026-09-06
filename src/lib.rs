@@ -19,5 +19,7 @@ pub mod config;
 pub mod error;
 pub mod model;
 pub mod provenance;
+pub mod recipes;
 pub mod runner;
+pub mod scan;
 pub mod store;
