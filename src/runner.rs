@@ -53,14 +53,26 @@ pub struct Real {
     pub dry_run: bool,
 }
 
+/// A scriptable reply closure for argv calls: returns a canned output or `None`.
+pub type ArgvReply = dyn Fn(&str, &[&str]) -> Option<Output> + Send + Sync;
+
+/// A scriptable reply closure for recipe (shell) calls.
+pub type RecipeReply = dyn Fn(&str) -> Option<Output> + Send + Sync;
+
 /// A stub that records which commands chive *intends* to run without running
-/// any. Tests inject it and then assert on the recorded argv/recipes.
+/// any, and can answer scripted outputs so provenance/restore logic is testable
+/// without real binaries.
 ///
-/// Because scans run sequentially over a single thread, a `RefCell` would be
-/// enough; a `Mutex` also permits a future parallel scan without rework.
-#[derive(Debug, Default)]
+/// Two concurrent facilities:
+/// - **hooks**: a closure consulted for each argv/recipe; return `Some(Output)`
+///   to script a reply, `None` (or no hook) for a default empty success.
+/// - **recording**: every command chive intended, in order, for later
+///   assertions.
+#[derive(Default)]
 pub struct Mock {
     programs: Vec<String>,
+    argv_hook: Option<Box<ArgvReply>>,
+    recipe_hook: Option<Box<RecipeReply>>,
     recorded: std::sync::Mutex<Vec<String>>,
 }
 
@@ -128,6 +140,23 @@ impl Mock {
         self.programs.push(program.into());
     }
 
+    /// Script replies to argv calls. The closure returns the output for the
+    /// given program+args, or `None` to fall through to empty success.
+    pub fn on_argv<F>(&mut self, f: F)
+    where
+        F: Fn(&str, &[&str]) -> Option<Output> + Send + Sync + 'static,
+    {
+        self.argv_hook = Some(Box::new(f));
+    }
+
+    /// Script replies to recipe (shell) calls.
+    pub fn on_recipe<F>(&mut self, f: F)
+    where
+        F: Fn(&str) -> Option<Output> + Send + Sync + 'static,
+    {
+        self.recipe_hook = Some(Box::new(f));
+    }
+
     fn record(&self, line: String) {
         self.recorded.lock().unwrap().push(line);
     }
@@ -136,11 +165,23 @@ impl Mock {
     pub fn recorded(&self) -> Vec<String> {
         self.recorded.lock().unwrap().clone()
     }
+
+    /// Success-with-label shorthand for script outputs.
+    pub fn ok(out: &str) -> Output {
+        Output {
+            stdout: out.into(),
+            stderr: String::new(),
+            code: Some(0),
+        }
+    }
 }
 
 impl Runner for Mock {
     fn run_argv(&self, program: &str, args: &[&str]) -> Result<Output> {
         self.record(format!("{program} {}", args.join(" ")));
+        if let Some(out) = self.argv_hook.as_ref().and_then(|h| h(program, args)) {
+            return Ok(out);
+        }
         Ok(Output {
             stdout: String::new(),
             stderr: String::new(),
@@ -150,6 +191,9 @@ impl Runner for Mock {
 
     fn run_recipe(&self, recipe: &str) -> Result<Output> {
         self.record(format!("recipe: {recipe}"));
+        if let Some(out) = self.recipe_hook.as_ref().and_then(|h| h(recipe)) {
+            return Ok(out);
+        }
         Ok(Output {
             stdout: String::new(),
             stderr: String::new(),
@@ -210,6 +254,24 @@ mod runner_tests {
         let rec = m.recorded();
         assert_eq!(rec[0], "dpkg -S /bin/ls");
         assert_eq!(rec[1], "recipe: git checkout HEAD -- init.el");
+    }
+
+    #[test]
+    fn mock_scripts_outputs_via_hook() {
+        let mut m = Mock::default();
+        m.on_argv(|program, _args| {
+            if program == "dpkg" {
+                Some(Output {
+                    stdout: "coreutils: /bin/ls".into(),
+                    stderr: String::new(),
+                    code: Some(0),
+                })
+            } else {
+                None
+            }
+        });
+        let out = m.run_argv("dpkg", &["-S", "/bin/ls"]).unwrap();
+        assert!(out.stdout.contains("coreutils"));
     }
 
     #[test]

@@ -10,8 +10,14 @@
 //! - [`error`] — typed errors mapped to process exit codes.
 //! - [`runner`] — the one seam through which external commands run.
 //! - [`catalog`] — the catalog: TOML as truth, SQLite as a derived index.
+//! - [`config`] — user-editable settings (ignore list, defaults).
+//! - [`store`] — where chive keeps its state.
+//! - [`provenance`] — how chive infers a recipe for a file.
 
 pub mod catalog;
+pub mod config;
 pub mod error;
 pub mod model;
+pub mod provenance;
 pub mod runner;
+pub mod store;

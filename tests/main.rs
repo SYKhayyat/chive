@@ -18,8 +18,8 @@ const DECLARED: &[&str] = &[];
 /// guard that keeps `autotests = false` honest.
 #[test]
 fn every_test_file_is_listed() {
-    let links: Vec<PathBuf> = walkdir_test_files(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"))
-        .collect();
+    let links: Vec<PathBuf> =
+        walkdir_test_files(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests")).collect();
     for file in &links {
         let name = file
             .file_stem()
