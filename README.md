@@ -45,9 +45,13 @@ chive infers recipes from provenance: package ownership, git tracking, symlinks.
 chive teach conf/emacs.d/init.el --method "git -C ~/dotfiles pull && cp ~/dotfiles/emacs.d/init.el '{dest}'"
 ```
 
-The `{dest}` variable expands to the file's absolute path on the target machine. Taught recipes are stored in `~/.config/chive/recipes.toml` and can be edited by hand.
+The `{dest}` variable expands to the file's absolute path on the target machine. Taught recipes are stored in `~/.config/chive/recipes.toml` and can be edited by hand. A taught recipe overrules inference, so it works on any file whatever status chive assigned it.
 
-Files without a recipe are `orphaned`. Files you know matter but can't rebuild yet: `chive protect <path>`.
+Files without a recipe are `orphaned`. Files you know matter but can't rebuild yet: mark them so `clean` leaves them alone:
+
+```bash
+chive mark conf/manual.nef --status not-restorable
+```
 
 ## Status
 
@@ -86,9 +90,9 @@ The catalog is plain text (TOML). It lives off-box — committed to a repo, or o
 | `chive plan restore` | Preview restore without running |
 | `chive restore <path...>` | Re-derive files by recipe |
 | `chive restore --all` | Restore every restorable file |
-| `chive teach <path> --method "<cmd>"` | Teach a recipe |
-| `chive protect <path>` | Mark orphaned → not-restorable |
-| `chive clean [--dry-run]` | Remove temporary + orphaned |
+| `chive teach <path> --method "<cmd>"` | Teach a recipe (overrules inference, any status) |
+| `chive mark <path> --status <st>` | Set status explicitly: `not-restorable` \| `temporary` \| `orphaned` |
+| `chive clean [--scope <t|o|both>] [--dry-run]` | Remove temporary + orphaned |
 | `chive export [--to <file>]` | Write catalog as TOML |
 | `chive import [--from <file>]` | Load catalog from TOML |
 | `chive stats` | Catalog statistics |

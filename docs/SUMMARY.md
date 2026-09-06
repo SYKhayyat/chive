@@ -50,7 +50,7 @@ The catalog TOML is the source of truth. SQLite is a derived index.
 
 ## MVP scope
 
-- CLI with: scan, status, plan, restore, teach, protect, clean, export, import, stats
+- CLI with: scan, status, plan, restore, teach, mark, clean, export, import, stats
 - Provenance detection: package ownership, git work-tree, symlinks
 - TOML catalog format with concrete schema
 - SQLite working index

@@ -33,7 +33,9 @@ The order matters: a file owned by a package that happens to be in a git repo sh
 
 `chive teach` writes to an extension file (recipes.toml), never to program code. This is the direct lesson of Shall's adapter system: the tool is extended by writing the thing it reads. Teaching a new restore source never requires recompiling.
 
-`chive protect` promotes an orphaned file to not-restorable. This is necessary because the scan can't know which orphaned files matter — only the owner knows. Without protect, the owner would have to teach a recipe immediately or risk losing a file to `clean`. Protect buys time: "this matters, I'll deal with it later."
+**A taught recipe overrules inference.** The owner's explicit recipe is stronger evidence of intent than any automatic provenance detection, because the owner is the one who says "rebuild it this way". Teaching therefore works on a file in any of the four statuses — including one chive already marked `restorable (verified)` or `temporary` — and always promotes it to `restorable (user_supplied)`. See D16.
+
+`chive mark` is the unified verb for setting an explicit status (`not-restorable`, `temporary`, or `orphaned`), folding the old separate `protect` verb (and its siblings) into one command. Marking always clears a recipe, because a status that is not `restorable` and a recipe are contradictory claims. `mark --status not-restorable` then `teach` is the two-step path to rebuilding a file the scan could not explain.
 
 ## Clean semantics
 

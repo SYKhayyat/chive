@@ -71,3 +71,9 @@ Every open question lives here with a status. Do not answer an open question in 
 - **Status**: ruled
 - **Why**: Reconstruction fills gaps. Overwriting existing files is a different operation with different risks.
 - **Ruling**: If `{dest}` already exists, chive refuses to restore that file. The user must delete or move it first.
+
+### D16 — Taught recipes overrule inference
+
+- **Status**: ruled
+- **Why**: The owner's explicit recipe is stronger evidence of intent than any automatic provenance detection. Teaching is a statement of *how to rebuild this file*; a scan-time inference is only a guess. Rules 2–4 of the scan order (temporary blob, provenance, orphaned) are all guesses about a file chive has not been told about.
+- **Ruling**: A user-taught recipe (`recipes.toml`, via `chive teach`) wins over every automatic classification for that path. Teaching works on a file in any of the four statuses and always promotes it to `restorable`, source `user_supplied`. `chive mark --status <not-restorable|temporary|orphaned>` is the unified verb for explicit status changes, folding the original `protect` command; marking clears a recipe.

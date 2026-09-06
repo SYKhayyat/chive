@@ -35,15 +35,15 @@ Every file in the catalog has exactly one status:
 
 ### How status is assigned during scan
 
-The decision is mechanical and deterministic:
+The decision is mechanical and deterministic, and one order governs it:
 
 1. If the file is in an ignored directory (see Ignore list below) — not cataloged at all.
-2. If the file matches a temporary-file heuristic — `temporary`.
-3. If provenance is detected (see Provenance detection below) — `restorable`, source `verified`.
-4. If a user-taught recipe matches — `restorable`, source `user_supplied`.
+2. If a user-taught recipe matches — `restorable`, source `user_supplied`. **A taught recipe is the owner's explicit word and overrules every automatic answer**, including an inferred recipe and even a temporary bloom (see D16).
+3. If the file matches a temporary-file heuristic — `temporary`.
+4. If provenance is detected (see Provenance detection below) — `restorable`, source `verified`.
 5. Otherwise — `orphaned`.
 
-`not-restorable` is never assigned automatically. It is only assigned when the owner explicitly protects a file: `chive protect <path>` moves an `orphaned` file to `not-restorable`, meaning "this file matters, I don't know how to rebuild it, don't clean it." This is the starting point for teaching: `chive protect` then `chive teach`.
+`not-restorable` is never assigned automatically. It is only assigned when the owner explicitly marks a file: `chive mark <path> --status not-restorable` moves an `orphaned` file to `not-restorable`, meaning "this file matters, I don't know how to rebuild it, don't clean it." This is the starting point for teaching.
 
 ### Status and clean
 
@@ -89,6 +89,12 @@ chive teach <path> --method "<shell command>"
 
 This writes a recipe to the extension file (see Store layout below). The entry becomes `restorable`, source `user_supplied`.
 
+A taught recipe works on a file in **any** of the four statuses: teaching an
+`orphaned`, `not-restorable`, `temporary`, or already-`restorable` (inferred)
+file promotes it to `restorable` with `user_supplied`, overriding whatever chive
+would otherwise have inferred. This is the owner's explicit word, and it wins
+over automatic detection (see D16).
+
 The recipe is a shell command. `{dest}` expands to the file's absolute path on the target (root + relative path). Example:
 
 ```bash
@@ -96,6 +102,20 @@ chive teach conf/emacs.d/init.el --method "git -C ~/dotfiles pull && cp ~/dotfil
 ```
 
 Taught recipes are also editable by hand in the extension file (TOML format).
+
+## Marking files (the unified verb)
+
+`chive mark <path> --status <not-restorable|temporary|orphaned>` sets a file's
+status explicitly. It is the single verb that covers what was once two separate
+actions and more:
+
+- `--status not-restorable` — the old `protect`: "this matters, don't clean it."
+- `--status temporary` — "this is transient, safe to clean."
+- `--status orphaned` — "no recipe, no protection; cleanable."
+
+Marking always clears any existing recipe (a marked file is never restorable).
+Use `mark not-restorable` then `teach` to turn a protected file into a
+rebuildable one.
 
 ## Recipes and restore
 
@@ -349,26 +369,33 @@ taught: conf/emacs.d/init.el
   method: git -C ~/dotfiles pull && cp ~/dotfiles/emacs.d/init.el '{dest}'
 ```
 
-### chive protect
+### chive mark
 
 ```bash
-chive protect <path>
+chive mark <path> --status <not-restorable|temporary|orphaned>
 ```
 
-Moves an `orphaned` file to `not-restorable`. This means: this file matters, don't clean it, and surface it in the "teach me" view.
+Sets a file's status explicitly (the unified verb). `mark` clears any existing
+recipe, so a marked file is never restorable.
+
+```bash
+chive mark Pictures/photo.nef --status not-restorable
+```
 
 Output:
 ```
-protected: Pictures/photo.nef (now not-restorable — teach it a recipe with `chive teach`)
+marked: Pictures/photo.nef → not-restorable
 ```
 
 ### chive clean
 
 ```bash
-chive clean [--dry-run] [--force]
+chive clean [--scope <temporary|orphaned|both>] [--dry-run] [--force]
 ```
 
-Removes `temporary` and `orphaned` files. Without `--force`, prompts for confirmation. `--dry-run` prints what would be removed.
+Removes `temporary` and/or `orphaned` files, scoped by `--scope` (default
+`both`). Without `--force`, prompts for confirmation. `--dry-run` prints what
+would be removed.
 
 Output:
 ```
