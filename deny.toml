@@ -2,8 +2,11 @@
 yanked = "warn"
 ignore = []
 
+# Chive builds on clap, serde, toml, rusqlite, chrono, walkdir, thiserror.
+# All are MIT or MIT/Apache-2.0 dual-licensed; rusqlite and deps may carry
+# other permissive licenses transitively.
 [licenses]
-allow = ["MIT"]
+allow = ["MIT", "Apache-2.0", "BSL-1.0", "Unicode-3.0", "ISC"]
 confidence-threshold = 0.8
 
 [bans]
