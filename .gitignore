@@ -1,1 +1,3 @@
 /target
+# docker build context (the static chive binary + a copy of run-in-container.sh) is a build artifact
+docker/integration/context/

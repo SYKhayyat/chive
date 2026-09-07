@@ -1,0 +1,6 @@
+FROM archlinux:latest
+RUN pacman -Syu --noconfirm --needed jq git
+COPY run-in-container.sh /run.sh
+COPY chive /usr/local/bin/chive
+RUN chmod +x /run.sh /usr/local/bin/chive
+ENTRYPOINT ["/bin/sh","/run.sh","pacman","sudo pacman -S jq"]

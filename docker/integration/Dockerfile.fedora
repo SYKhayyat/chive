@@ -1,0 +1,6 @@
+FROM fedora:latest
+RUN dnf -y install jq git ca-certificates && dnf clean all
+COPY run-in-container.sh /run.sh
+COPY chive /usr/local/bin/chive
+RUN chmod +x /run.sh /usr/local/bin/chive
+ENTRYPOINT ["/bin/sh","/run.sh","rpm","sudo dnf reinstall jq"]

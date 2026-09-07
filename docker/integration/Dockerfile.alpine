@@ -1,0 +1,6 @@
+FROM alpine:3.20
+RUN apk add --no-cache jq git
+COPY run-in-container.sh /run.sh
+COPY chive /usr/local/bin/chive
+RUN chmod +x /run.sh /usr/local/bin/chive
+ENTRYPOINT ["/bin/sh","/run.sh","apk","sudo apk add --upgrade jq"]

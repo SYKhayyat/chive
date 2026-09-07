@@ -1,0 +1,6 @@
+FROM ubuntu:24.04
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jq git ca-certificates
+COPY run-in-container.sh /run.sh
+COPY chive /usr/local/bin/chive
+RUN chmod +x /run.sh /usr/local/bin/chive
+ENTRYPOINT ["/bin/sh","/run.sh","dpkg","sudo apt-get install --reinstall jq"]
