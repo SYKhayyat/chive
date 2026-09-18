@@ -13,7 +13,7 @@ Note: all 11 commits are ds-era (scaffolded 09-05/06) — review as new code, no
 - [x] #19/#29 nested git basename (same root — work once). (High) — FIXED: detector probes the repo-relative path instead of the basename; unit + harness tests pin it.
 - [x] #21 no-clobber brittle + TOCTOU. (High) — FIXED: no-clobber uses lstat (`action::present`) so a dangling symlink counts as present; TOCTOU documented as inherent to the check-then-act seam (see why.md).
 - [x] #26 no mkdir -p of dest parents. (High) — FIXED: restore creates the `{dest}` parent directory through the Runner seam (no-op under dry-run), after the no-clobber check; migration test no longer needs `mkdir -p` in the taught recipe.
-- [ ] #28 absolute recipes kill portable restore. (High)
+- [x] #28 absolute recipes kill portable restore. (High) — FIXED: git recipes address the repo with a `{root}` token (scan-root-relative), expanded at restore time from `--root`; a repo outside the scan root stays absolute (honestly machine-bound). Pinned by a two-machine end-to-end test.
 - [x] #20/#30 exists storm (same root as #24/#25 — adapters fixed separately) — FIXED: manager availability hoisted to once per scan (program names, not manager names); per-file loop consults the hoisted list.
 - [x] #24/#25 apk/rpm/xbps adapters fixed (dnf audited; nix removed) — FIXED: rpm/dnf probe `--queryformat %{NAME}` (exact bare name, no regex guessing); apk regex anchored on real path-first output; xbps probes `-o` (ownership) not `-f` (file listing) and parses `pkg-ver_rel:`; probe answers trimmed before matching; nix adapter removed — its recipe could never succeed and its comment promised orphan-fallback.
 

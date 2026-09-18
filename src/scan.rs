@@ -43,7 +43,7 @@ pub struct Provenance<'a> {
 }
 
 impl<'a> Provenance<'a> {
-    pub fn new(runner: &'a dyn Runner, package: &'a PackageDetector) -> Self {
+    pub fn new(runner: &'a dyn Runner, package: &'a PackageDetector, scan_root: &'a Path) -> Self {
         let available_managers = package
             .available(runner)
             .into_iter()
@@ -53,7 +53,7 @@ impl<'a> Provenance<'a> {
             runner,
             package,
             available_managers,
-            git: GitDetector::new(runner),
+            git: GitDetector::new(runner, Some(scan_root)),
             symlink: SymlinkDetector,
         }
     }
@@ -86,12 +86,13 @@ impl<'a> Scanner<'a> {
     pub fn new(
         runner: &'a dyn Runner,
         package: &'a PackageDetector,
+        scan_root: &'a Path,
         recipes: &'a Recipes,
         config: &'a Config,
         extra_ignore: &'a [String],
     ) -> Self {
         Scanner {
-            provenance: Provenance::new(runner, package),
+            provenance: Provenance::new(runner, package, scan_root),
             recipes,
             config,
             extra_ignore,
@@ -263,7 +264,7 @@ mod scan_tests {
         std::fs::write(dir.path().join("real.txt"), "x").unwrap();
         let mock = Mock::default();
         let (cfg, pkg, recipes) = parts();
-        let s = Scanner::new(&mock, &pkg, &recipes, &cfg, &[]);
+        let s = Scanner::new(&mock, &pkg, dir.path(), &recipes, &cfg, &[]);
         let files = s.scan(dir.path()).unwrap();
         let paths: Vec<_> = files.iter().map(|e| e.path.as_str()).collect();
         assert!(paths.contains(&"real.txt"));
@@ -284,7 +285,7 @@ mod scan_tests {
         std::fs::write(dir.path().join("#auto#"), "").unwrap();
         let mock = Mock::default();
         let (cfg, pkg, recipes) = parts();
-        let s = Scanner::new(&mock, &pkg, &recipes, &cfg, &[]);
+        let s = Scanner::new(&mock, &pkg, dir.path(), &recipes, &cfg, &[]);
         let files = s.scan(dir.path()).unwrap();
         let temp: Vec<_> = files
             .iter()
@@ -307,7 +308,7 @@ mod scan_tests {
             .unwrap();
         let mock = Mock::default(); // no provenance programs
         let (cfg, pkg2, _rec) = parts();
-        let s = Scanner::new(&mock, &pkg2, &recipes, &cfg, &[]);
+        let s = Scanner::new(&mock, &pkg2, dir.path(), &recipes, &cfg, &[]);
         let files = s.scan(dir.path()).unwrap();
         let e = files.iter().find(|e| e.path == "conf.txt").unwrap();
         assert_eq!(e.status, Status::Restorable);
@@ -325,7 +326,7 @@ mod scan_tests {
         std::fs::write(dir.path().join("photo.nef"), "").unwrap();
         let mock = Mock::default();
         let (cfg, pkg, recipes) = parts();
-        let s = Scanner::new(&mock, &pkg, &recipes, &cfg, &[]);
+        let s = Scanner::new(&mock, &pkg, dir.path(), &recipes, &cfg, &[]);
         let files = s.scan(dir.path()).unwrap();
         let e = files.iter().find(|e| e.path == "photo.nef").unwrap();
         assert_eq!(e.status, Status::Orphaned);
@@ -344,7 +345,7 @@ mod scan_tests {
                 .unwrap();
             let mock = Mock::default();
             let (cfg, pkg2, recipes) = parts();
-            let s = Scanner::new(&mock, &pkg2, &recipes, &cfg, &[]);
+            let s = Scanner::new(&mock, &pkg2, dir.path(), &recipes, &cfg, &[]);
             let files = s.scan(dir.path()).unwrap();
             let e = files.iter().find(|e| e.path == "link.txt").unwrap();
             assert_eq!(e.status, Status::Restorable);
@@ -372,7 +373,7 @@ mod scan_tests {
                 }
             });
             let (cfg, pkg, recipes) = parts();
-            let s = Scanner::new(&mock, &pkg, &recipes, &cfg, &[]);
+            let s = Scanner::new(&mock, &pkg, dir.path(), &recipes, &cfg, &[]);
             let files = s.scan(dir.path()).unwrap();
             let e = files.iter().find(|e| e.path == "link.txt").unwrap();
             assert_eq!(e.status, Status::Restorable);
@@ -395,7 +396,7 @@ mod scan_tests {
         let mock = Mock::default();
         let (cfg, pkg, recipes) = parts();
         let ignore = ["vendor".to_string()];
-        let s = Scanner::new(&mock, &pkg, &recipes, &cfg, &ignore);
+        let s = Scanner::new(&mock, &pkg, dir.path(), &recipes, &cfg, &ignore);
         let files = s.scan(dir.path()).unwrap();
         assert!(!files.iter().any(|e| e.path.contains("vendor")));
     }

@@ -108,7 +108,9 @@ match wins. This order is load-bearing and pinned by tests
 
 2. **Git work-tree**: The file is tracked by a git repo.
    - Detect: `git -C <dir> ls-files --error-unmatch <relpath>` walks up.
-   - Recipe: `git -C <repo> checkout HEAD -- <relpath>`.
+   - Recipe: `git -C '{root}/<repo-relative>' checkout HEAD -- <relpath>` when the
+     repo sits under the scan root (portable); absolute `-C` when it does not
+     (that recipe is honestly machine-bound).
    - `{dest}` is the file path. The repo must exist on the target machine (chive records the repo URL if available from remote config).
 
 3. **Symlink**: The file is a symbolic link.
@@ -165,6 +167,9 @@ A recipe is an executable shell command. During `chive restore`, each recipe is 
 Variables in the recipe are substituted before execution:
 
 - `{dest}` — the absolute path where the file should appear on the target (`root + path`).
+- `{root}` — the target machine's restore root. Recipes that address a resource
+  beside the file itself (the git repo holding `{dest}`) use it, so the recipe
+  never embeds the source machine's absolute layout.
 
 Exit code 0 means success. Non-zero means failure; chive reports it and continues with other files. A restore run where any recipe failed exits non-zero (1) — every file is still attempted and reported, but the process must not claim success. `clean` follows the same rule: any path that could not be removed makes the exit non-zero.
 

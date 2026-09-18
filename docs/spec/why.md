@@ -103,6 +103,17 @@ per-file reporting is the product — but the final status carries the worst
 outcome. `clean` obeys the same honesty rule: a path it could not remove is a
 failure, not a shrug.
 
+## Recipes never embed the source machine's layout
+
+A recipe is read on the machine it rebuilds, so an absolute path in it is a
+fossil of wherever the catalog was born (issue #28): `git -C /home/alice/...
+checkout` can only fail on machine B — or, worse, succeed against an unrelated
+directory that happens to sit at that path. The repo is therefore addressed
+relative to the scan root with a `{root}` token and resolved at restore time,
+exactly like `{dest}`. A repo outside the scan root cannot be given a portable
+relative address, so its recipe stays absolute — an honest machine-bound
+recipe is better than one that silently lies about portability.
+
 ## Restore creates the destination's parent
 
 A catalog from machine A records `conf/emacs.d/init.el`; machine B has never

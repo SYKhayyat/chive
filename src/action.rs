@@ -38,6 +38,14 @@ pub fn substitute(recipe: &str, dest: &Path) -> String {
     recipe.replace("{dest}", &dest.to_string_lossy())
 }
 
+/// Substitute `{root}` — the target machine's restore root. Recipes that
+/// address a resource beside the file itself (a git repo holding `{dest}`)
+/// use it so the recipe works on any machine whose layout matches the
+/// catalog's relative one (issue #28).
+pub fn substitute_root(recipe: &str, root: &Path) -> String {
+    recipe.replace("{root}", &root.to_string_lossy())
+}
+
 /// Whether `p` is present on disk, in the no-clobber sense. This must be an
 /// lstat, not `exists()`: a dangling symlink is a real occupant of the path
 /// (issue #21) and overwriting it would clobber whatever it is about to name.
@@ -92,7 +100,7 @@ pub fn build_plan<'a>(
                 path: &entry.path,
                 command: match &dest {
                     Some(d) => substitute(method, d),
-                    None => method.to_string(),
+                    None => method.replace("{root}", &root.to_string_lossy()),
                 },
                 dest,
             }

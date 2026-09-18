@@ -80,7 +80,14 @@ impl App {
     pub fn scan(&self, root: &Path, extra_ignore: &[String]) -> Result<Catalog> {
         let config = Config::load(&self.store.config_file())?;
         let recipes = Recipes::load(&self.store.recipes_file())?;
-        let scanner = Scanner::new(&self.runner, &self.package, &recipes, &config, extra_ignore);
+        let scanner = Scanner::new(
+            &self.runner,
+            &self.package,
+            root,
+            &recipes,
+            &config,
+            extra_ignore,
+        );
         let files = scanner.scan(root)?;
         Catalog::new(
             root.to_string_lossy().into_owned(),

@@ -10,18 +10,21 @@ use crate::runner::Runner;
 /// Progress marker when walking up to find the repo root.
 pub struct GitDetector<'a> {
     runner: &'a dyn Runner,
+    /// The scan root, if the caller knows it. Recipes for repos under it are
+    /// written portably (`{root}/<rel>`); repos outside it stay absolute.
+    scan_root: Option<&'a Path>,
 }
 
 impl<'a> GitDetector<'a> {
-    pub fn new(runner: &'a dyn Runner) -> Self {
-        GitDetector { runner }
+    pub fn new(runner: &'a dyn Runner, scan_root: Option<&'a Path>) -> Self {
+        GitDetector { runner, scan_root }
     }
 }
 
 impl super::Detector for GitDetector<'_> {
     fn detect(&self, abs_path: &Path) -> Option<Recipe> {
         git_location(self.runner, abs_path).map(|loc| Recipe {
-            restore_method: loc.recipe(),
+            restore_method: loc.recipe(self.scan_root),
             source: Source::Verified,
             category: None, // git says nothing about *type*; the classifier decides
         })
@@ -40,12 +43,28 @@ pub struct GitLocation {
 
 impl GitLocation {
     /// The recipe to re-derive this file: checkout from HEAD in that repo.
-    pub fn recipe(&self) -> String {
-        format!(
-            "git -C {:?} checkout HEAD -- '{}'",
-            self.repo_root.display(),
-            self.rel_path
-        )
+    ///
+    /// The repo is addressed relative to the scan root with `{root}` — the
+    /// same token substitution resolves on the target machine — never as the
+    /// source machine's absolute path, which can only name a directory that
+    /// does not exist there (issue #28). When the repo sits outside the scan
+    /// root there is no portable address, so the recipe stays absolute and
+    /// honestly machine-bound rather than silently wrong elsewhere.
+    pub fn recipe(&self, scan_root: Option<&Path>) -> String {
+        match scan_root
+            .and_then(|root| self.repo_root.strip_prefix(root).ok())
+            .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+        {
+            Some(rel) => format!(
+                "git -C '{{root}}/{rel}' checkout HEAD -- '{}'",
+                self.rel_path
+            ),
+            None => format!(
+                "git -C {:?} checkout HEAD -- '{}'",
+                self.repo_root.display(),
+                self.rel_path
+            ),
+        }
     }
 }
 
@@ -123,7 +142,7 @@ mod git_detector_tests {
         // No .git anywhere (the /tmp root has none up to filesystem root), and
         // git isn't even registered. Walking hits the root and stops.
         let mock = Mock::default();
-        let d = GitDetector::new(&mock);
+        let d = GitDetector::new(&mock, None);
         assert!(d.detect(Path::new("/tmp/no/repo/here/file.txt")).is_none());
     }
 
@@ -149,7 +168,7 @@ mod git_detector_tests {
             }
         });
 
-        let d = GitDetector::new(&mock);
+        let d = GitDetector::new(&mock, None);
         // canonicalization: detect() receives the canonical path.
         let canonical = std::fs::canonicalize(&f).unwrap();
         let r = d.detect(&canonical).expect("tracked file is git-sourced");
@@ -178,7 +197,7 @@ mod git_detector_tests {
                 None
             }
         });
-        let d = GitDetector::new(&mock);
+        let d = GitDetector::new(&mock, None);
         assert!(d.detect(&canonical).is_none());
     }
 
@@ -212,7 +231,7 @@ mod git_detector_tests {
                 None
             }
         });
-        let d = GitDetector::new(&mock);
+        let d = GitDetector::new(&mock, None);
         let r = d
             .detect(&canonical)
             .expect("nested tracked file is git-sourced");
