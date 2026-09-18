@@ -103,6 +103,17 @@ per-file reporting is the product — but the final status carries the worst
 outcome. `clean` obeys the same honesty rule: a path it could not remove is a
 failure, not a shrug.
 
+## Restore creates the destination's parent
+
+A catalog from machine A records `conf/emacs.d/init.el`; machine B has never
+heard of `conf/emacs.d/`. Without parent creation, every taught recipe that
+writes into a nested path fails on exactly the machine a restore is for —
+unless the owner hand-pollutes the recipe with `mkdir -p`, which is
+scaffolding, not a recipe (issue #26). chive creates the parent through the
+Runner seam, after the no-clobber check (a refused restore must not leave
+directories behind), and never for recipes without `{dest}` — package
+managers place their own files.
+
 ## Restore: no clobber
 
 Refusing to overwrite an existing file is the line between "reconstruct" and "overwrite." Reconstruction fills gaps; it does not replace what's already there. If the user wants to replace, they delete or move the existing file first. This is the same discipline as Shall's `sync` — check before acting.

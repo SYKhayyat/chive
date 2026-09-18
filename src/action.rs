@@ -111,26 +111,39 @@ pub enum RestoreOutcome {
 }
 
 /// Execute restore steps in order. A step whose `dest` already exists is
-/// refused without running (the no-clobber rule, decision D15).
+/// refused without running (the no-clobber rule, decision D15). Before a
+/// `{dest}` recipe runs, its parent directory is created (issue #26): a fresh
+/// machine has none of the directories the source layout implies.
 pub fn restore(runner: &dyn Runner, items: &[RestoreItem]) -> Vec<RestoreOutcome> {
     items
         .iter()
         .map(|item| {
-            if let Some(dest) = &item.dest
-                && present(dest)
-            {
+            let Some(dest) = &item.dest else {
+                return run_recipe(runner, item);
+            };
+            if present(dest) {
                 return RestoreOutcome::SkippedExists(item.path.to_string());
             }
-            match runner.run_recipe(&item.command) {
-                Ok(out) if out.success() => RestoreOutcome::Restored(item.path.to_string()),
-                Ok(out) => RestoreOutcome::Failed(
+            if !runner.ensure_parent_dir(dest) {
+                return RestoreOutcome::Failed(
                     item.path.to_string(),
-                    describe_failure(&item.command, &out.stderr, out.code),
-                ),
-                Err(e) => RestoreOutcome::Failed(item.path.to_string(), e.to_string()),
+                    format!("could not create parent directory for {}", dest.display()),
+                );
             }
+            run_recipe(runner, item)
         })
         .collect()
+}
+
+fn run_recipe(runner: &dyn Runner, item: &RestoreItem) -> RestoreOutcome {
+    match runner.run_recipe(&item.command) {
+        Ok(out) if out.success() => RestoreOutcome::Restored(item.path.to_string()),
+        Ok(out) => RestoreOutcome::Failed(
+            item.path.to_string(),
+            describe_failure(&item.command, &out.stderr, out.code),
+        ),
+        Err(e) => RestoreOutcome::Failed(item.path.to_string(), e.to_string()),
+    }
 }
 
 fn describe_failure(command: &str, stderr: &str, code: Option<i32>) -> String {
@@ -340,6 +353,65 @@ mod action_tests {
         let outcomes = restore(&mock, &plan);
         assert!(matches!(outcomes[0], RestoreOutcome::Restored(_)));
         assert_eq!(mock.recorded(), vec!["recipe: echo hi"]);
+    }
+
+    #[test]
+    fn restore_creates_the_dest_parent_dir_before_the_recipe_runs() {
+        // Issue #26: a fresh machine has none of the parent directories the
+        // source layout implies; restore must make them, in order, and only
+        // after the no-clobber check passes.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let c = c_at(
+            root,
+            vec![restorable("conf/emacs.d/init.el", "echo x > '{dest}'")],
+        );
+        let plan = build_plan(&c, root, &[], &[]);
+        let mock = crate::runner::Mock::default();
+        let outcomes = restore(&mock, &plan);
+        assert!(matches!(outcomes[0], RestoreOutcome::Restored(_)));
+        let dest = root.join("conf/emacs.d/init.el").display().to_string();
+        assert_eq!(
+            mock.recorded(),
+            vec![
+                format!("mkdir {dest}"),
+                format!("recipe: echo x > '{dest}'"),
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_skips_clobber_before_creating_any_directory() {
+        // The no-clobber check precedes parent creation: a refused restore
+        // must not leave directories behind.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("conf/emacs.d")).unwrap();
+        std::fs::write(root.join("conf/emacs.d/init.el"), "present").unwrap();
+        let c = c_at(
+            root,
+            vec![restorable("conf/emacs.d/init.el", "echo x > '{dest}'")],
+        );
+        let plan = build_plan(&c, root, &[], &[]);
+        let mock = crate::runner::Mock::default();
+        let outcomes = restore(&mock, &plan);
+        assert!(matches!(outcomes[0], RestoreOutcome::SkippedExists(_)));
+        assert!(
+            mock.recorded().is_empty(),
+            "a refused restore runs nothing and creates nothing"
+        );
+    }
+
+    #[test]
+    fn recipes_without_dest_create_no_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let c = c_at(root, vec![restorable("pkg.txt", "sudo apt --reinstall x")]);
+        let plan = build_plan(&c, root, &[], &[]);
+        let mock = crate::runner::Mock::default();
+        let outcomes = restore(&mock, &plan);
+        assert!(matches!(outcomes[0], RestoreOutcome::Restored(_)));
+        assert_eq!(mock.recorded(), vec!["recipe: sudo apt --reinstall x"]);
     }
 
     #[test]

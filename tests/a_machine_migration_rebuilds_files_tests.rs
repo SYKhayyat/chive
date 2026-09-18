@@ -14,14 +14,13 @@ fn a_catalog_survives_moving_to_a_new_machine() {
     a.put("seed/settings.toml", "a=1");
     a.put("conf/settings.toml", "ignoreme"); // scan sees the present file
     a.ok(&["scan", a.home.to_str().unwrap()]);
-    // teach a recipe that re-derives conf/settings.toml from ~/seed. NOTE: the
-    // recipe must mkdir the parent — chive's restore does not create it (open
-    // issue: nested {dest} fails on a fresh machine).
+    // teach a recipe that re-derives conf/settings.toml from ~/seed. The
+    // parent directory does not exist on B; restore creates it (issue #26).
     a.ok(&[
         "teach",
         "conf/settings.toml",
         "--method",
-        "mkdir -p \"$(dirname \"{dest}\")\" && cp ~/seed/settings.toml \"{dest}\"",
+        "cp ~/seed/settings.toml \"{dest}\"",
     ]);
     // an orphan that must NOT be restored (no recipe)
     a.put("Pictures/photo.nef", "bytes");
@@ -75,7 +74,7 @@ fn restore_refuses_to_clobber_an_existing_file() {
         "teach",
         "conf/n.txt",
         "--method",
-        "mkdir -p \"$(dirname \"{dest}\")\" && cp ~/seed/n.txt \"{dest}\"",
+        "cp ~/seed/n.txt \"{dest}\"",
     ]);
     a.ok(&["scan", a.home.to_str().unwrap()]);
     let catalog = a.root.join("catalog.toml");

@@ -51,6 +51,12 @@ pub trait Runner {
     /// under dry-run; an already-absent path is success, not an error —
     /// "nothing to remove" is the end state clean wants.
     fn remove_file(&self, path: &Path) -> bool;
+
+    /// Ensure the parent directory of `path` exists. Restore calls this before
+    /// running a `{dest}` recipe: a fresh machine has none of the directories
+    /// the source machine's layout implies. Under dry-run this touches
+    /// nothing and reports success.
+    fn ensure_parent_dir(&self, path: &Path) -> bool;
 }
 
 /// Executes commands for real. `dry_run` makes every command a no-op that
@@ -153,6 +159,18 @@ impl Runner for Real {
             Err(_) => false,
         }
     }
+
+    fn ensure_parent_dir(&self, path: &Path) -> bool {
+        if self.dry_run {
+            return true;
+        }
+        match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => {
+                std::fs::create_dir_all(parent).is_ok()
+            }
+            _ => true, // no parent to create
+        }
+    }
 }
 
 impl Mock {
@@ -228,6 +246,11 @@ impl Runner for Mock {
     fn remove_file(&self, path: &Path) -> bool {
         self.record(format!("rm {}", path.display()));
         path.exists() // model dry-run honestly: only "removes" what exists
+    }
+
+    fn ensure_parent_dir(&self, path: &Path) -> bool {
+        self.record(format!("mkdir {}", path.display()));
+        true
     }
 }
 

@@ -172,7 +172,8 @@ Exit code 0 means success. Non-zero means failure; chive reports it and continue
 
 - `chive restore <path...>` — restore named files.
 - `chive restore --all` — restore every `restorable` file.
-- Before executing, chive checks if `{dest}` already exists. If it does, chive **refuses to act** on that file (no clobber). The user must delete or move it first.
+- Before executing, chive checks if `{dest}` already exists. If it does, chive **refuses to act** on that file (no clobber). The user must delete or move it first. The check passes only if the parent directory creation would also be pointless: the check precedes any filesystem change.
+- For a `{dest}` recipe, chive creates the destination's parent directory before running the recipe. A fresh machine has none of the directories the source layout implies; a recipe should describe how to re-derive the file, not the scaffolding around it.
 - `chive plan restore` — preview every restore action without executing. Prints the recipe and `{dest}` for each file. This is the "see what can be restored and how" view.
 
 ## Categories
