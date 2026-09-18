@@ -63,33 +63,26 @@ impl TomlFile {
         }
     }
 
-    fn into_entry(self, path: &Path) -> Result<FileEntry> {
+    fn into_entry(self, file_index: usize, catalog: &Path) -> Result<FileEntry> {
+        let at = format!("{}: files[{file_index}]", catalog.display());
+        let name = self.path.clone();
         let valid = self.size >= 0 && self.status_is_consistent(&self.status);
-        match self {
-            TomlFile { .. } if !valid => Err(Error::parse(
-                path.to_path_buf(),
-                format!("entry {path:?} has an invalid size or status/recipe combination"),
-            )),
-            TomlFile {
-                path,
-                status,
-                category,
-                restore_method,
-                source,
-                not_restorable_reason,
-                size,
-                modified,
-            } => Ok(FileEntry {
-                path,
-                status,
-                category,
-                restore_method,
-                source,
-                not_restorable_reason,
-                size,
-                modified,
-            }),
+        let entry = FileEntry {
+            path: self.path,
+            status: self.status,
+            category: self.category,
+            restore_method: self.restore_method,
+            source: self.source,
+            not_restorable_reason: self.not_restorable_reason,
+            size: self.size,
+            modified: self.modified,
+        };
+        if !valid {
+            return Err(Error::Catalog(format!(
+                "entry {name:?} ({at}) has an invalid size or status/recipe combination"
+            )));
         }
+        Ok(entry)
     }
 
     fn status_is_consistent(&self, status: &Status) -> bool {
@@ -123,14 +116,10 @@ pub fn from_str(text: &str, path: &Path) -> Result<Catalog> {
     let files = doc
         .files
         .into_iter()
-        .map(|f| f.into_entry(path))
+        .enumerate()
+        .map(|(i, f)| f.into_entry(i, path))
         .collect::<Result<Vec<_>>>()?;
-    Ok(Catalog::new(
-        doc.meta.root,
-        doc.meta.scanned_at,
-        doc.meta.host,
-        files,
-    ))
+    Catalog::new(doc.meta.root, doc.meta.scanned_at, doc.meta.host, files)
 }
 
 /// Serialize a catalog to TOML text.
@@ -180,6 +169,7 @@ mod toml_tests {
             "desktop".into(),
             vec![e, o],
         )
+        .unwrap()
     }
 
     #[test]

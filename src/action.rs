@@ -10,8 +10,17 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::catalog::Catalog;
+use crate::error::Result;
 use crate::model::{FileEntry, Status};
 use crate::runner::Runner;
+
+/// Defense in depth behind [`crate::catalog::validate_path`]: prove that `p`,
+/// joined onto `root`, still names a file inside `root`. Restore and clean call
+/// this before they touch the filesystem, so even a caller that bypassed the
+/// catalog boundary cannot make chive write or delete outside the root.
+fn contained(root: &Path, p: &Path) -> bool {
+    p.starts_with(root)
+}
 
 /// One resolvable restore step, shared by `plan` and `restore`.
 #[derive(Debug, Clone)]
@@ -68,7 +77,10 @@ pub fn build_plan<'a>(
         .into_iter()
         .map(|entry| {
             let method = entry.restore_method.as_deref().unwrap_or_default();
-            let dest = method.contains("{dest}").then(|| root.join(&entry.path));
+            let dest = method
+                .contains("{dest}")
+                .then(|| root.join(&entry.path))
+                .filter(|d| contained(root, d));
             RestoreItem {
                 path: &entry.path,
                 command: match &dest {
@@ -156,6 +168,7 @@ pub fn clean_preview<'a>(
         .iter()
         .filter(|e| scope.selects(e.status))
         .map(|e| (e.path.as_str(), root.join(&e.path)))
+        .filter(|(_, abs)| contained(root, abs))
         .collect()
 }
 
@@ -166,7 +179,7 @@ pub fn clean_execute(
     catalog: &Catalog,
     root: &Path,
     scope: CleanScope,
-) -> (Catalog, Vec<String>) {
+) -> Result<(Catalog, Vec<String>)> {
     let rows = clean_preview(catalog, root, scope);
     let mut removed: Vec<String> = Vec::new();
     for (rel, abs) in rows {
@@ -186,8 +199,8 @@ pub fn clean_execute(
         catalog.scanned_at.clone(),
         catalog.host.clone(),
         files,
-    );
-    (next, removed)
+    )?;
+    Ok((next, removed))
 }
 
 #[cfg(test)]
@@ -222,11 +235,11 @@ mod action_tests {
             size: 1,
             modified: None,
         });
-        Catalog::new("/root".into(), "t".into(), "h".into(), files)
+        Catalog::new("/root".into(), "t".into(), "h".into(), files).unwrap()
     }
 
     fn c_at(root: &Path, files: Vec<FileEntry>) -> Catalog {
-        Catalog::new(root.to_string_lossy().into(), "t".into(), "h".into(), files)
+        Catalog::new(root.to_string_lossy().into(), "t".into(), "h".into(), files).unwrap()
     }
 
     #[test]
@@ -329,7 +342,7 @@ mod action_tests {
         assert_eq!(temp[0].0, "temp~");
 
         let mock = crate::runner::Mock::default();
-        let (next, removed) = clean_execute(&mock, &c, root, CleanScope::Both);
+        let (next, removed) = clean_execute(&mock, &c, root, CleanScope::Both).unwrap();
         assert_eq!(removed.len(), 2);
         assert!(next.by_path("junk.tmp").is_none());
         assert!(next.by_path("temp~").is_none());

@@ -82,12 +82,12 @@ impl App {
         let recipes = Recipes::load(&self.store.recipes_file())?;
         let scanner = Scanner::new(&self.runner, &self.package, &recipes, &config, extra_ignore);
         let files = scanner.scan(root)?;
-        Ok(Catalog::new(
+        Catalog::new(
             root.to_string_lossy().into_owned(),
             now_iso(),
             hostname(),
             files,
-        ))
+        )
     }
 }
 
@@ -136,7 +136,7 @@ mod app_tests {
             1,
             None,
         );
-        let c = Catalog::new("/root".into(), "t".into(), "h".into(), vec![entry]);
+        let c = Catalog::new("/root".into(), "t".into(), "h".into(), vec![entry]).unwrap();
         app.save_catalog(&c).unwrap();
         let back = app.load_catalog().unwrap();
         assert_eq!(back, c);

@@ -27,10 +27,11 @@ fn bug_git_nested_files_are_restorable() {
     );
 }
 
-/// Open issue #17 — catalog paths must not be allowed to escape the root.
+/// Fixed issue #17 — catalog paths are contained: `import` refuses any entry
+/// whose path could address a file outside the scan root, so restore/clean can
+/// never be pointed outside the tree the catalog describes.
 #[test]
-#[ignore = "issue #17: import does not validate catalog paths; `..` writes outside root"]
-fn bug_import_rejects_paths_outside_the_root() {
+fn import_rejects_paths_outside_the_root() {
     let env = Env::new("bug_traversal");
     std::fs::create_dir_all(env.home.join("tree")).unwrap();
 
@@ -44,13 +45,24 @@ fn bug_import_rejects_paths_outside_the_root() {
     );
     std::fs::write(&evil, body).unwrap();
 
-    let out = env.run(&["import", "--from", evil.to_str().unwrap()]);
-    let _ = out; // idempotent import; the traversal is exercised by restore
-    env.ok(&["restore", "--root", env.home.join("tree").to_str().unwrap()]);
-
+    let (out, code) = env.run(&["import", "--from", evil.to_str().unwrap()]);
+    assert!(
+        code != 0,
+        "import must refuse a catalog whose paths escape the root:\n{out}"
+    );
+    assert!(
+        out.contains("escapes the scan root"),
+        "the refusal must say why:\n{out}"
+    );
     assert!(
         !env.root.join("outside.txt").exists(),
-        "a catalog `..` path must not be allowed to write outside the root"
+        "a `..` path must never be written outside the root"
+    );
+    // nothing was imported: the store stays empty
+    let (_, status_code) = env.run(&["status"]);
+    assert_eq!(
+        status_code, 4,
+        "no catalog may exist after a refused import"
     );
 }
 

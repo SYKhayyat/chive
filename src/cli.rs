@@ -399,7 +399,7 @@ fn cmd_teach(app: &App, path: &str, method: &str) -> Result<i32> {
             entry.status = Status::Restorable;
             entry.restore_method = Some(method.to_string());
             entry.source = Some(Source::UserSupplied);
-            catalog.upsert(entry).map_err(Error::Catalog)?;
+            catalog.upsert(entry)?;
         }
         None => {
             // A taught recipe for a file not present on this machine should not
@@ -427,7 +427,7 @@ fn cmd_mark(app: &App, path: &str, status: MarkStatus) -> Result<i32> {
     // A mark clears any previous restore recipe; the entry is no longer restorable.
     entry.restore_method = None;
     entry.source = None;
-    catalog.upsert(entry).map_err(Error::Catalog)?;
+    catalog.upsert(entry)?;
     app.save_catalog(&catalog)?;
     println!("marked: {path} → {target}");
     Ok(0)
@@ -457,7 +457,7 @@ fn cmd_clean(app: &App, scope: CleanScope, dry_run: bool, force: bool) -> Result
         &catalog,
         &root,
         scope,
-    );
+    )?;
     catalog = next;
     app.save_catalog(&catalog)?;
     println!("removed {} file(s)", removed.len());

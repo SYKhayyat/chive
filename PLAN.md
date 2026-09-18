@@ -4,7 +4,7 @@ Worker loop: top unchecked item only, fix + test, commit, check off, stop.
 Note: all 11 commits are ds-era (scaffolded 09-05/06) — review as new code, not fixes.
 
 ## Phase 1 — Safety foundations (nothing restores until these land)
-- [ ] #17 path escape: import/restore/clean can write/delete outside scan root → normalize+contain. (Critical)
+- [x] #17 path escape: import/restore/clean can write/delete outside scan root → normalize+contain. (Critical) — FIXED: containment rule enforced in `Catalog` construction + action-time re-checks; spec rule V-path-containment.
 - [ ] #18 restore exits 0 on failure → real exit codes (note: #13 is the same bug, DUP — work once). (High)
 - [ ] #12 provenance order contract (docs say pkg→git→symlink, code runs reverse) → pick one, enforce. (High)
 - [ ] #10 SQLite-vs-TOML truth decision → record, then fix #22 full reparse/rebuild. (Medium)

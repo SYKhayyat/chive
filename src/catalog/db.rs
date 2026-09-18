@@ -134,7 +134,7 @@ pub fn load(conn: &Connection) -> Result<Catalog> {
             modified,
         });
     }
-    Ok(Catalog::new(root, scanned_at, host, files))
+    Catalog::new(root, scanned_at, host, files)
 }
 
 fn set(tx: &rusqlite::Transaction<'_>, key: &str, value: &str) -> Result<()> {
@@ -187,7 +187,7 @@ mod db_tests {
             None,
         );
         let o = FileEntry::new_orphaned("tmp/x".into(), None, 3, None);
-        Catalog::new("/home/u".into(), "t".into(), "h".into(), vec![e, o])
+        Catalog::new("/home/u".into(), "t".into(), "h".into(), vec![e, o]).unwrap()
     }
 
     #[test]

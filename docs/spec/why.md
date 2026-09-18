@@ -2,6 +2,18 @@
 
 Every rule in `target-state.md` has a matching explanation here. If a rule changed, this file changed in the same commit.
 
+## Path containment
+
+A catalog path is data from outside the machine — it arrives by `import`, and
+`restore` and `clean` act on it with real filesystem writes and deletes. An
+unvalidated `root.join(path)` is therefore a stranger's instruction to write
+outside everything chive owns: `../..` in a crafted catalog is all it takes
+(issue #17). The rule is enforced once, at `Catalog` construction, so no
+invalid path can exist in memory and every later join is safe by construction;
+restore/clean re-check containment as defense in depth. Fail closed at the
+boundary (`import` refuses, store untouched) beats scrubbing paths mid-flight,
+because a half-sanitized traversal is the bug that comes back.
+
 ## Catalog root and {dest} substitution
 
 The catalog stores relative paths so it works on any machine. But recipes need to know where to write on the target. The `{dest}` variable solves both: the catalog is portable, and the recipe knows its destination at restore time. This mirrors how Shall's module grammar works — the data is relative, the machine resolves it. The root is supplied at restore time (`--root`), not baked into the catalog, because the same catalog describes machines with different home directories.

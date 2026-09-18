@@ -16,6 +16,40 @@ Everything chive does serves one outcome: on a new or damaged machine, being abl
 - The catalog is plain text (TOML) that can be committed to git.
 - The catalog must live off-box to be useful: it is committed to a repo or kept on storage that survives the box.
 
+## Path containment (security boundary)
+
+A catalog is a file that may have come from anywhere — another machine, another
+person. Every entry path in a catalog is therefore constrained, and the
+constraint is enforced in `Catalog` construction so an invalid path cannot exist
+in memory:
+
+- relative to the scan root — never absolute, never a drive prefix;
+- `/`-separated, no empty segments, no `.` or `..` segments;
+- no backslash (a backslash is a legal Unix filename character, but it is how a
+  Windows-authored catalog would smuggle a second separator past a join);
+- no NUL.
+
+`chive import` refuses a catalog whose entries break the rule; `restore` and
+`clean` re-check that a joined path still falls under the root before touching
+the filesystem (defense in depth). A refused import leaves the store untouched.
+
+## Path containment (security boundary)
+
+A catalog is a file that may have come from anywhere — another machine, another
+person. Every entry path in a catalog is therefore constrained, and the
+constraint is enforced in `Catalog` construction so an invalid path cannot exist
+in memory:
+
+- relative to the scan root — never absolute, never a drive prefix;
+- `/`-separated, no empty segments, no `.` or `..` segments;
+- no backslash (a backslash is a legal Unix filename character, but it is how a
+  Windows-authored catalog would smuggle a second separator past a join);
+- no NUL.
+
+`chive import` refuses a catalog whose entries break the rule; `restore` and
+`clean` re-check that a joined path still falls under the root before touching
+the filesystem (defense in depth). A refused import leaves the store untouched.
+
 ## Catalog root
 
 Every catalog entry is addressed by `path` relative to the scan root. The scan root is the path passed to `chive scan` (e.g. `~/`). The catalog records the root at scan time.
