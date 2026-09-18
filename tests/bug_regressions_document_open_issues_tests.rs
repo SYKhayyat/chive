@@ -88,10 +88,9 @@ fn bug_restore_failure_is_a_nonzero_exit() {
     );
 }
 
-/// Open issue #21 — a dangling symlink at `{dest}` must count as present (no
-/// clobber), not as absent.
+/// Fixed issue #21 — a dangling symlink at `{dest}` must count as present (no
+/// clobber), not as absent: exists() follows links, lstat does not.
 #[test]
-#[ignore = "issue #21: no-clobber treats a dangling symlink dest as absent"]
 fn bug_dangling_symlink_is_present_for_noclobber() {
     let env = Env::new("bug_noclobber_dangling");
     env.put("conf/x.txt", "v");

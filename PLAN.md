@@ -11,7 +11,7 @@ Note: all 11 commits are ds-era (scaffolded 09-05/06) — review as new code, no
 
 ## Phase 2 — Correctness
 - [x] #19/#29 nested git basename (same root — work once). (High) — FIXED: detector probes the repo-relative path instead of the basename; unit + harness tests pin it.
-- [ ] #21 no-clobber brittle + TOCTOU. (High)
+- [x] #21 no-clobber brittle + TOCTOU. (High) — FIXED: no-clobber uses lstat (`action::present`) so a dangling symlink counts as present; TOCTOU documented as inherent to the check-then-act seam (see why.md).
 - [ ] #26 no mkdir -p of dest parents. (High)
 - [ ] #28 absolute recipes kill portable restore. (High)
 - [ ] #25 apk/rpm/xbps adapters, #24 dnf/nix/rpm suspects, #20/#30 exists storm (same root — work once).

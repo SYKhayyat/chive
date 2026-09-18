@@ -75,6 +75,14 @@ failure, not a shrug.
 
 Refusing to overwrite an existing file is the line between "reconstruct" and "overwrite." Reconstruction fills gaps; it does not replace what's already there. If the user wants to replace, they delete or move the existing file first. This is the same discipline as Shall's `sync` — check before acting.
 
+"Existing" means *occupying the path*, which is an lstat question, not an
+`exists()` question: a dangling symlink is a real occupant (issue #21), and
+clobbering it would destroy a link the owner is about to point somewhere new.
+The check-then-act gap (the path appearing between the lstat and the recipe's
+own write) is inherent to a shell-recipe seam — chive cannot make the recipe
+atomic — so the rule is checked at the last moment chive controls, and the
+recipe itself remains the owner's contract.
+
 ## Recipes as shell commands
 
 A recipe is a shell command, not a label. This means chive can restore anything that has a shell-invocable recipe, regardless of the source: package manager, git, curl, custom script. The recipe is the contract between the catalog and the machine.

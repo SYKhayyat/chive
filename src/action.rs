@@ -38,6 +38,13 @@ pub fn substitute(recipe: &str, dest: &Path) -> String {
     recipe.replace("{dest}", &dest.to_string_lossy())
 }
 
+/// Whether `p` is present on disk, in the no-clobber sense. This must be an
+/// lstat, not `exists()`: a dangling symlink is a real occupant of the path
+/// (issue #21) and overwriting it would clobber whatever it is about to name.
+pub fn present(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok()
+}
+
 /// The restorable entries selected by include/exclude. No includes means every
 /// restorable entry; includes narrows; excludes subtracts from whatever is left.
 pub fn select_restorable<'a>(
@@ -110,7 +117,7 @@ pub fn restore(runner: &dyn Runner, items: &[RestoreItem]) -> Vec<RestoreOutcome
         .iter()
         .map(|item| {
             if let Some(dest) = &item.dest
-                && dest.exists()
+                && present(dest)
             {
                 return RestoreOutcome::SkippedExists(item.path.to_string());
             }
@@ -294,6 +301,31 @@ mod action_tests {
         assert!(
             mock.recorded().is_empty(),
             "no recipe ran for a clobbered dest"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_dangling_symlink_dest_counts_as_present() {
+        // Issue #21: exists() follows the link and reports absence; the
+        // no-clobber check must not.
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("dangling");
+        std::os::unix::fs::symlink(dir.path().join("gone"), &link).unwrap();
+        assert!(!link.exists(), "fixture must be a *dangling* link");
+        assert!(present(&link), "lstat must report the link as present");
+
+        let c = c_at(
+            dir.path(),
+            vec![restorable("dangling", "echo X > '{dest}'")],
+        );
+        let plan = build_plan(&c, dir.path(), &[], &[]);
+        let mock = crate::runner::Mock::default();
+        let outcomes = restore(&mock, &plan);
+        assert!(matches!(outcomes[0], RestoreOutcome::SkippedExists(_)));
+        assert!(
+            mock.recorded().is_empty(),
+            "a dangling occupant must not be clobbered"
         );
     }
 
