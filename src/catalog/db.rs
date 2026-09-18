@@ -37,18 +37,36 @@ CREATE TABLE IF NOT EXISTS files (
 pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path).map_err(db_err)?;
     conn.execute_batch(SCHEMA).map_err(db_err)?;
-    let v: i64 = conn
-        .query_row(
-            "SELECT value FROM meta WHERE key = 'schema_version'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(SCHEMA_VERSION);
+    // Only an absent row means "pre-versioning index, assume current". A row
+    // that cannot be read as a number is not coercible to the current version
+    // — that would disable the gate exactly when the file is suspect.
+    let v: i64 = match conn.query_row(
+        "SELECT value FROM meta WHERE key = 'schema_version'",
+        [],
+        |r| r.get(0),
+    ) {
+        Ok(v) => v,
+        Err(rusqlite::Error::QueryReturnedNoRows) => SCHEMA_VERSION,
+        Err(e) => {
+            return Err(Error::Catalog(format!(
+                "index schema version is unreadable ({e}); rebuild with `chive scan`"
+            )));
+        }
+    };
     if v != SCHEMA_VERSION {
         return Err(Error::Catalog(format!(
             "index schema version {v} is not supported (wanted {SCHEMA_VERSION}); rebuild with `chive scan`"
         )));
     }
+    Ok(conn)
+}
+
+/// A raw connection for the writer. The version gate guards *readers*; a
+/// writer must always be able to open the index so it can restamp it wholesale
+/// (otherwise a wrongly-versioned index could never be repaired by scanning).
+pub fn open_for_write(path: &Path) -> Result<Connection> {
+    let conn = Connection::open(path).map_err(db_err)?;
+    conn.execute_batch(SCHEMA).map_err(db_err)?;
     Ok(conn)
 }
 
@@ -60,6 +78,10 @@ pub fn replace(conn: &mut Connection, catalog: &Catalog) -> Result<()> {
     tx.execute("DELETE FROM meta WHERE key <> 'schema_version'", [])
         .map_err(db_err)?;
 
+    // Stamp the version this index was written with: open() refuses an index
+    // whose version it cannot read, which is only possible if replace() wrote
+    // one (issue #31 — the gate existed but nothing ever set it).
+    set(&tx, "schema_version", &SCHEMA_VERSION.to_string())?;
     set(&tx, "root", &catalog.root)?;
     set(&tx, "scanned_at", &catalog.scanned_at)?;
     set(&tx, "host", &catalog.host)?;
@@ -213,6 +235,32 @@ mod db_tests {
         let conn = temp_conn();
         let err = load(&conn).unwrap_err();
         assert!(matches!(err, Error::MissingCatalog));
+    }
+
+    #[test]
+    fn replace_stamps_the_schema_version() {
+        // Issue #31: schema_version was read on open but never written, so the
+        // version gate could never fire.
+        let mut conn = temp_conn();
+        replace(&mut conn, &sample()).unwrap();
+        assert_eq!(get(&conn, "schema_version").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn an_index_from_an_unknown_future_version_is_refused() {
+        let mut conn = temp_conn();
+        replace(&mut conn, &sample()).unwrap();
+        conn.execute(
+            "UPDATE meta SET value = '999' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+        let path = std::path::PathBuf::from(conn.path().unwrap());
+        let err = open(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("schema version"),
+            "open must refuse an index it cannot read: {err}"
+        );
     }
 
     #[test]

@@ -64,11 +64,15 @@ impl App {
     }
 
     /// Persist a catalog: write the TOML truth, then rebuild the derived index.
+    /// The index is rebuilt through a raw connection: `open`'s version gate
+    /// guards *readers*, and a writer must always be able to restamp the index
+    /// wholesale (a write that cannot start because the old index is versioned
+    /// wrong could never repair it).
     pub fn save_catalog(&self, catalog: &Catalog) -> Result<()> {
         self.store.ensure()?;
         let truth = self.store.default_catalog_file();
         toml::write(catalog, &truth)?;
-        let mut conn = db::open(&self.store.db_file())?;
+        let mut conn = db::open_for_write(&self.store.db_file())?;
         db::replace(&mut conn, catalog)
     }
 

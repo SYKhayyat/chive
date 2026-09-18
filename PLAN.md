@@ -19,7 +19,7 @@ Note: all 11 commits are ds-era (scaffolded 09-05/06) — review as new code, no
 
 ## Phase 3 — Decisions + hygiene (D1–D13, in dependency order)
 - [ ] #8 D1 language ruling → #4 D5 cross-platform → #2 D3 absence → #1 D2 manager → #3 D4 off-box sync → #5 D7 taxonomy → #6 D12 GUI → #7 D13 license (MIT vs All-rights-reserved + missing LICENSE file).
-- [ ] #31 schema_version dead, #27 --all parity, #23 dead code, #15 ignore defaults, #16 platform drift, #9 macOS/Windows matrix.
+- [x] #31 schema_version dead — FIXED: `replace` stamps the index version it writes; `open` refuses a version row it cannot parse as a number (was: any read failure silently coerced to "current", disabling the gate); writers use `open_for_write` so a wrongly-versioned index can always be repaired by rescanning.
 
 ## Routing rule for new issues
 Any AI opening an issue here MUST put safety/boundary items in Phase 1 and decisions in Phase 3 order — never append a feature above #17/#18. Duplicates of one root cause get folded into the existing line. See AI_ISSUE_ROUTING.md.
