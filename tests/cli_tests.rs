@@ -293,3 +293,74 @@ fn help_and_version_exit_zero() {
     env.chive().arg("--help").assert().success();
     env.chive().arg("--version").assert().success();
 }
+
+#[test]
+fn restore_all_is_the_documented_spelling_of_the_default() {
+    // Issue #27: the README documents `chive restore --all`, but the flag did
+    // not exist. It must parse and behave exactly like a bare `restore`.
+    let env = Env::new();
+    env.put("seed/a.txt", "A");
+    env.put("conf/a.txt", "old");
+    env.chive()
+        .arg("scan")
+        .arg(env.tree.path())
+        .assert()
+        .success();
+    env.chive()
+        .args(["teach", "conf/a.txt"])
+        .args([
+            "--method",
+            "cp \"$(dirname '{dest}')/../seed/a.txt\" '{dest}'",
+        ])
+        .assert()
+        .success();
+    // remove the dest so restore has work to do
+    std::fs::remove_file(env.tree.path().join("conf/a.txt")).unwrap();
+
+    let restore = env
+        .chive()
+        .args(["restore", "--all", "--root"])
+        .arg(env.tree.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8_lossy(&restore);
+    assert!(
+        out.contains("restored: conf/a.txt"),
+        "--all restored the taught file:\n{out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.tree.path().join("conf/a.txt")).unwrap(),
+        "A"
+    );
+
+    // --all is mutually exclusive with explicit paths
+    env.chive()
+        .args(["restore", "--all", "conf/a.txt", "--root"])
+        .arg(env.tree.path())
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn plan_restore_all_also_parses() {
+    let env = Env::new();
+    env.put("notes.md", "x");
+    env.chive()
+        .arg("scan")
+        .arg(env.tree.path())
+        .assert()
+        .success();
+    env.chive()
+        .args(["teach", "notes.md"])
+        .args(["--method", "echo X > '{dest}'"])
+        .assert()
+        .success();
+    env.chive()
+        .args(["plan", "restore", "--all", "--root"])
+        .arg(env.tree.path())
+        .assert()
+        .success();
+}

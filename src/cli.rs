@@ -61,6 +61,11 @@ enum Command {
     },
     /// Re-derive files by running their recipes. Default: every restorable file.
     Restore {
+        /// Explicit spelling of the default: restore every restorable file.
+        /// Paths and --all are the same operation; `chive restore --all` is
+        /// the documented form.
+        #[arg(long, conflicts_with_all = ["paths", "exclude"])]
+        all: bool,
         /// The target root used to resolve `{dest}`.
         #[arg(long)]
         root: Option<PathBuf>,
@@ -126,10 +131,14 @@ fn restore_sigpipe() {
 enum PlanCmd {
     /// Preview restoring every restorable file (or a chosen subset).
     Restore {
+        /// Explicit spelling of the default (parity with `restore --all`).
+        #[arg(long, conflicts_with_all = ["plan_paths", "plan_exclude"])]
+        all: bool,
         #[arg(long)]
         root: Option<PathBuf>,
+        #[arg(id = "plan_paths")]
         paths: Vec<String>,
-        #[arg(long)]
+        #[arg(long, id = "plan_exclude")]
         exclude: Vec<String>,
     },
 }
@@ -212,12 +221,14 @@ pub fn run(argv: impl IntoIterator<Item = String>) -> Result<i32> {
         Command::Stats => cmd_stats(&app)?,
         Command::Plan { sub } => match sub {
             PlanCmd::Restore {
+                all: _,
                 root,
                 paths,
                 exclude,
             } => cmd_plan(&app, root, &paths, &exclude)?,
         },
         Command::Restore {
+            all: _,
             root,
             paths,
             exclude,
