@@ -126,12 +126,11 @@ fn bug_package_exists_probe_is_hoisted_out_of_the_per_file_loop() {
     );
 }
 
-// ---- issue #24: broken package-manager adapters (evidenced by the container
-// harness on alpine/fedora/void and by the realistic fakes here). Each asserts
-// the *correct* package name is extracted from real manager output.
+// ---- fixed issue #24: broken package-manager adapters (evidenced by the
+// container harness on alpine/fedora/void and by the realistic fakes here).
+// Each pins the *correct* package name extracted from real manager output.
 
 #[test]
-#[ignore = "issue #24: apk name_match captures the path, not the package (real `apk info -W` is path-first)"]
 fn bug_apk_adapter_extracts_the_package_name() {
     let env = Env::new("bug_apk");
     env.own("apk", "bin/jq", "jq");
@@ -149,7 +148,6 @@ fn bug_apk_adapter_extracts_the_package_name() {
 }
 
 #[test]
-#[ignore = "issue #24: rpm name_match captures pkg-version, so the recipe reinstalls `pkg-version`, not the bare name"]
 fn bug_rpm_adapter_extracts_the_bare_package_name() {
     let env = Env::new("bug_rpm");
     env.own("rpm", "bin/jq", "jq");
@@ -163,7 +161,6 @@ fn bug_rpm_adapter_extracts_the_bare_package_name() {
 }
 
 #[test]
-#[ignore = "issue #24: xbps name_match `^([^ -]+) ` cannot match real `xbps-query -f` output (`pkg-ver_rel path`)"]
 fn bug_xbps_adapter_extracts_the_package_name() {
     let env = Env::new("bug_xbps");
     env.own("xbps", "bin/htop", "htop");

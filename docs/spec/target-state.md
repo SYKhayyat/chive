@@ -99,8 +99,10 @@ match wins. This order is load-bearing and pinned by tests
 (`provenance_order_is_package_then_git_then_symlink_tests`):
 
 1. **Package ownership**: The file is owned by an installed package.
-   - Linux: `dpkg -S <abs>`, `pacman -Qo <abs>`, `rpm -qf <abs>`
+   - Linux: `dpkg -S <abs>`, `pacman -Qo <abs>`, `rpm -qf --queryformat %{NAME} <abs>`, `apk info -W <abs>`, `xbps-query -o <abs>`
    - macOS: check if file is under a known brew/cellar path
+   - Probes are answered per manager's real output; the probe answer is trimmed before the `name_match` regex runs against it. rpm/dnf are asked for the bare name (`--queryformat %{NAME}`) rather than parsed out of `name-version-release`.
+   - Nix store files are deliberately not claimed: no package-manager verb re-derives a file from a derivation path, so they fall through to git/symlink/orphan.
    - Recipe: reinstall the owning package. For deb: `sudo apt-get install --reinstall <pkg>`. For pacman: `sudo pacman -S <pkg>`. For brew: `brew reinstall <pkg>`.
    - No `{dest}` substitution needed — the package manager places the file.
 

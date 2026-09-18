@@ -15,6 +15,7 @@ Note: all 11 commits are ds-era (scaffolded 09-05/06) — review as new code, no
 - [ ] #26 no mkdir -p of dest parents. (High)
 - [ ] #28 absolute recipes kill portable restore. (High)
 - [x] #20/#30 exists storm (same root as #24/#25 — adapters fixed separately) — FIXED: manager availability hoisted to once per scan (program names, not manager names); per-file loop consults the hoisted list.
+- [x] #24/#25 apk/rpm/xbps adapters fixed (dnf audited; nix removed) — FIXED: rpm/dnf probe `--queryformat %{NAME}` (exact bare name, no regex guessing); apk regex anchored on real path-first output; xbps probes `-o` (ownership) not `-f` (file listing) and parses `pkg-ver_rel:`; probe answers trimmed before matching; nix adapter removed — its recipe could never succeed and its comment promised orphan-fallback.
 
 ## Phase 3 — Decisions + hygiene (D1–D13, in dependency order)
 - [ ] #8 D1 language ruling → #4 D5 cross-platform → #2 D3 absence → #1 D2 manager → #3 D4 off-box sync → #5 D7 taxonomy → #6 D12 GUI → #7 D13 license (MIT vs All-rights-reserved + missing LICENSE file).

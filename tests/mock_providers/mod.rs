@@ -16,10 +16,10 @@
 
 use std::path::Path;
 
-/// The built-in `os = ["linux"]` managers from `backends.toml`, plus `nix`'s
-/// `nix-store` which is faked to always miss. This is the set the scanner
-/// probes per file.
-pub const MANAGERS: &[&str] = &["dpkg", "pacman", "rpm", "dnf", "apk", "xbps", "nix-store"];
+/// The built-in `os = ["linux"]` managers from `backends.toml` (nix removed:
+/// its --deriver probe named a derivation no verb can restore from). This is
+/// the set the scanner can probe per file.
+pub const MANAGERS: &[&str] = &["dpkg", "pacman", "rpm", "dnf", "apk", "xbps"];
 
 /// An ownership fixture: which installed package owns which absolute path, per
 /// fake manager. Written as one `<pkg> <path>` line per file into `owners/<m>`.
@@ -59,27 +59,25 @@ impl Ownership {
 /// Every invocation is appended to `$CHIVE_CALL_LOG`.
 ///
 /// The probe call shapes come from `backends.toml`:
-///   dpkg  -S <path>       pacman -Qo <path>   rpm -qf <path>
-///   dnf   repoquery -f <path>  apk info -W <path>   xbps -f <path>
-///   nix-store -q --deriver <path>
+///   dpkg  -S <path>       pacman -Qo <path>
+///   rpm   -qf --queryformat %{NAME} <path>   (path at "$4")
+///   dnf   repoquery --queryformat %{NAME} -f <path>   (path at "$5")
+///   apk   info -W <path>   xbps-query -o <path>
 fn script(manager: &str) -> String {
     // The shell positional that holds the probed path, per the adapter's
-    // detect_args (chive passes program then the args array). Two-arg probes
-    // (dpkg -S, pacman -Qo, rpm -qf, xbps -f) put the path at "$2"; three-arg
-    // ones (dnf repoquery -f, apk info -W) at "$3".
+    // detect_args (chive passes program then the args array), and the output
+    // line the real manager prints. rpm/dnf honor --queryformat %{NAME} by
+    // printing the bare package name, exactly what the real tools do.
     let (pvar, emit) = match manager {
         "dpkg" => ("\"${2}\"", "{pkg}: $P"),
         "pacman" => ("\"${2}\"", "$P is owned by {pkg} 1.7.1-1"),
-        "rpm" => ("\"${2}\"", "{pkg}-1.7.1-4.x86_64"),
-        "dnf" => ("\"${3}\"", "{pkg}.x86_64"),
-        // Real `apk info -W <path>` prints the *path* first ("<path> is owned by
-        // <pkg>-<ver>"), so the adapter's `^([^ ]+)` captures the path, not the
-        // package. This fake replicates real output.
+        "rpm" => ("\"${4}\"", "{pkg}"),
+        "dnf" => ("\"${5}\"", "{pkg}"),
+        // Real `apk info -W <path>` is path-first: "<path> is owned by
+        // <pkg>-<ver>".
         "apk" => ("\"${3}\"", "$P is owned by {pkg}-1.7.1-r0"),
-        // Real `xbps-query -f <path>` is "<pkg>-<ver>_<rel> <path>" (no space
-        // between pkg and version); the adapter's `^([^ -]+) ` never matches.
-        "xbps" => ("\"${2}\"", "{pkg}-1.0_1 $P"),
-        "nix-store" => ("", ""), // always miss: deriver restore is disputed (#24)
+        // Real `xbps-query -o <path>`: "<pkg>-<ver>_<rel>: <path> (<type>)".
+        "xbps" => ("\"${2}\"", "{pkg}-1.0_1: $P (regular file)"),
         _ => unreachable!("unknown manager {manager}"),
     };
     let caught = if pvar.is_empty() { ": none" } else { "owns" };

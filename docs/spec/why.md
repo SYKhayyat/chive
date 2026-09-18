@@ -61,6 +61,27 @@ documented order is now pinned by tests so the two can't drift apart again.
 
 Confirmation is required unless `--force` is passed. This mirrors Shall's removal guard (U26 rule): an action that deletes must be previewed and confirmed. `--dry-run` prints what would be removed without removing it.
 
+## Package adapters parse what the manager actually prints
+
+An adapter regex written against imagined output is a bug that only a real
+machine can catch (issue #24: apk's output is path-first, xbps's `-f` flag
+lists a package's files instead of answering ownership, rpm glued the version
+into the recipe). Three disciplines keep the adapters honest:
+
+- **Ask the tool for the exact answer when it can give one.** rpm and dnf take
+  `--queryformat %{NAME}` and print the bare package name — no regex has to
+  guess where a name ends and a version begins.
+- **Anchor on the documented shape when it can't.** apk's "<path> is owned by
+  <pkg>-<ver>-r<rev>" and xbps's "<pkgver>: <path> (<type>)" are parsed from
+  their real, documented formats.
+- **Trim before matching.** Probe answers end with a newline; a line-anchored
+  regex is written against the line, not the raw bytes.
+
+A probe that answers something no verb can restore from is worse than no
+probe: the nix adapter named a `.drv` derivation path that only exists on the
+source machine's store, so the honest behaviour is to claim nothing and let
+the file fall through.
+
 ## Manager availability is asked once per scan
 
 Package detection consults each adapter per file, and each argv adapter used to

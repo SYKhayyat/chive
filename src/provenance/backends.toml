@@ -38,23 +38,25 @@ detect_args = ["-Qo", "{path}"]
 name_match = '(?m)^[^ ].* is owned by ([^ ]+)'
 restore = "sudo pacman -S {pkg}"
 
-# Fedora / RHEL / CentOS / openSUSE-with-rpm (rpm -qf prints pkg-ver-rel).
+# Fedora / RHEL / CentOS / openSUSE-with-rpm. --queryformat asks rpm for the
+# bare package name itself, so no regex has to guess where name ends and
+# version begins (the old capture glued pkg-version into the recipe).
 [[manager]]
 name = "rpm"
 os = ["linux"]
 program = "rpm"
-detect_args = ["-qf", "{path}"]
-name_match = '^([A-Za-z0-9_+.-]+?)(?:-[0-9][^- ]*)?$'
+detect_args = ["-qf", "--queryformat", "%{NAME}", "{path}"]
+name_match = '^([A-Za-z0-9_+.-]+)$'
 restore = "sudo dnf reinstall {pkg}"
 
-# openSUSE's zypper owns rpm files too, but dnf reinstall covers rpm-family.
-# DNF is separated so a dnf-based machine is unambiguous.
+# DNF-based machines without rpm on PATH: repoquery -f prints the path, the
+# --queryformat form prints the bare name.
 [[manager]]
 name = "dnf"
 os = ["linux"]
 program = "dnf"
-detect_args = ["repoquery", "-f", "{path}"]
-name_match = '^([^: ]+)$'
+detect_args = ["repoquery", "--queryformat", "%{NAME}", "-f", "{path}"]
+name_match = '^([A-Za-z0-9_+.-]+)$'
 restore = "sudo dnf reinstall {pkg}"
 
 # Homebrew (macOS + Linuxbrew). A file under the Cellar is owned by the formula
@@ -66,31 +68,34 @@ path_prefix = "/opt/homebrew/Cellar/"
 name_match = '^/opt/homebrew/Cellar/([^/]+)/'
 restore = "brew reinstall {pkg}"
 
-# Alpine.
+# Alpine. `apk info -W <path>` is path-first: "<path> is owned by
+# <pkg>-<ver>-r<rev>". The name/version boundary is the hyphen before the
+# version, anchored by the trailing `-r<rev>` revision suffix.
 [[manager]]
 name = "apk"
 os = ["linux"]
 program = "apk"
 detect_args = ["info", "-W", "{path}"]
-name_match = '^([^ ]+) '
+name_match = 'is owned by (.+)-[^-]+-r[0-9]+$'
 restore = "sudo apk add --upgrade {pkg}"
 
-# Void.
+# Void. `xbps-query -o <path>` answers "<pkgver>: <path> (<type>)" where
+# <pkgver> is "pkg-ver_rel"; the bare name is everything before the last
+# hyphen of the first field. (The old probe asked -f, which lists a package's
+# files and does not answer ownership at all.)
 [[manager]]
 name = "xbps"
 os = ["linux"]
 program = "xbps-query"
-detect_args = ["-f", "{path}"]
-name_match = '^([^ -]+) '
+detect_args = ["-o", "{path}"]
+name_match = '^(.+)-[0-9][^-_]*_[0-9]+:'
 restore = "sudo xbps-install -S {pkg}"
 
-# Nix / NixOS. Ownership is not a simple reverse lookup; nix-store realises the
-# path and the derivation appears in `nix-store -q --deriver`. We keep this
-# conservative: fall back to git/symlink/orphan if nix is the only owner.
-[[manager]]
-name = "nix"
-os = ["linux"]
-program = "nix-store"
-detect_args = ["-q", "--deriver", "{path}"]
-name_match = '^([^ ]+\.drv)$'
-restore = "nix profile install {pkg}"
+# Nix / NixOS: deliberately absent. `nix-store -q --deriver` names a
+# *derivation* (.drv) that exists only on the source machine's store, and no
+# package-manager verb re-derives a file from it on a fresh one — the old
+# adapter captured the .drv path and wrote it into `nix profile install`,
+# which can only fail. Its comment claimed fallback to git/symlink/orphan;
+# removal is what makes the code match that. Files under /nix/store now fall
+# through honestly until a real nix recipe exists (a scoped issue, not a
+# regex fix).

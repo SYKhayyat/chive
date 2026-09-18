@@ -126,8 +126,10 @@ fn probe(
     if !out.success() {
         return None;
     }
+    // Match against the trimmed answer: probes end their line with a newline,
+    // and an anchored `name_match` is written against the line, not the bytes.
     let name = name_match
-        .captures(&out.stdout)
+        .captures(out.stdout.trim())
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string())
         .filter(|s| !s.is_empty())?;
