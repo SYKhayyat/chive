@@ -14,7 +14,7 @@ Note: all 11 commits are ds-era (scaffolded 09-05/06) — review as new code, no
 - [x] #21 no-clobber brittle + TOCTOU. (High) — FIXED: no-clobber uses lstat (`action::present`) so a dangling symlink counts as present; TOCTOU documented as inherent to the check-then-act seam (see why.md).
 - [ ] #26 no mkdir -p of dest parents. (High)
 - [ ] #28 absolute recipes kill portable restore. (High)
-- [ ] #25 apk/rpm/xbps adapters, #24 dnf/nix/rpm suspects, #20/#30 exists storm (same root — work once).
+- [x] #20/#30 exists storm (same root as #24/#25 — adapters fixed separately) — FIXED: manager availability hoisted to once per scan (program names, not manager names); per-file loop consults the hoisted list.
 
 ## Phase 3 — Decisions + hygiene (D1–D13, in dependency order)
 - [ ] #8 D1 language ruling → #4 D5 cross-platform → #2 D3 absence → #1 D2 manager → #3 D4 off-box sync → #5 D7 taxonomy → #6 D12 GUI → #7 D13 license (MIT vs All-rights-reserved + missing LICENSE file).

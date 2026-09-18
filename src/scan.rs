@@ -30,19 +30,29 @@ use crate::provenance::{Detector, Recipe};
 use crate::recipes::Recipes;
 use crate::runner::Runner;
 
-/// The provenance chain, resolved once and reused for every file.
+/// The provenance chain, resolved once per scan and reused for every file.
+/// `available_managers` is the hoisted per-machine answer to "which package
+/// managers are installed?" — asking per file would spawn a `--version`
+/// subprocess per manager per file (issue #20).
 pub struct Provenance<'a> {
     runner: &'a dyn Runner,
     package: &'a PackageDetector,
+    available_managers: Vec<String>,
     git: GitDetector<'a>,
     symlink: SymlinkDetector,
 }
 
 impl<'a> Provenance<'a> {
     pub fn new(runner: &'a dyn Runner, package: &'a PackageDetector) -> Self {
+        let available_managers = package
+            .available(runner)
+            .into_iter()
+            .map(String::from)
+            .collect();
         Provenance {
             runner,
             package,
+            available_managers,
             git: GitDetector::new(runner),
             symlink: SymlinkDetector,
         }
@@ -57,7 +67,7 @@ impl<'a> Provenance<'a> {
     /// not the precedence.
     fn detect(&self, abs: &Path) -> Option<Recipe> {
         self.package
-            .detect(self.runner, abs)
+            .detect(self.runner, &self.available_managers, abs)
             .or_else(|| self.git.detect(abs))
             .or_else(|| self.symlink.detect(abs))
     }

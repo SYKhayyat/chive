@@ -109,9 +109,9 @@ fn bug_dangling_symlink_is_present_for_noclobber() {
     );
 }
 
-/// Open issue #20 — package `exists()` probes must not run per file.
+/// Fixed issue #20 (dup #30) — package `exists()` probes are hoisted out of
+/// the per-file loop: managers are detected once per scan, then reused.
 #[test]
-#[ignore = "issue #20: package probe spawns ~7 `exists` subprocesses per file"]
 fn bug_package_exists_probe_is_hoisted_out_of_the_per_file_loop() {
     let env = Env::new("bug_exists_hoist");
     // a tree with enough files that "per file" is distinguishable from "once"

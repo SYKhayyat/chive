@@ -61,6 +61,17 @@ documented order is now pinned by tests so the two can't drift apart again.
 
 Confirmation is required unless `--force` is passed. This mirrors Shall's removal guard (U26 rule): an action that deletes must be previewed and confirmed. `--dry-run` prints what would be removed without removing it.
 
+## Manager availability is asked once per scan
+
+Package detection consults each adapter per file, and each argv adapter used to
+re-ask `exists(program)` per file — a `--version` subprocess per manager per
+file, O(files × managers) for an answer that cannot change mid-scan (issue
+#20). Availability is hoisted: once per scan, then the per-file loop consults
+the hoisted list. The list names *probe programs* (`xbps-query`), the same key
+the per-file gate compares, not manager names (`xbps`) — a mismatch there
+would silently disable a manager while looking fully correct in tests that
+never spell out the difference.
+
 ## Failure is visible in the exit status
 
 `chive restore` is run by scripts and by people; both read the exit code as the
