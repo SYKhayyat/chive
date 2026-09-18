@@ -55,6 +55,16 @@ The order matters: a file owned by a package that happens to be in a git repo sh
 
 Confirmation is required unless `--force` is passed. This mirrors Shall's removal guard (U26 rule): an action that deletes must be previewed and confirmed. `--dry-run` prints what would be removed without removing it.
 
+## Failure is visible in the exit status
+
+`chive restore` is run by scripts and by people; both read the exit code as the
+claim "everything I asked for happened." A run that restored nine files and
+failed on the tenth must not exit 0 — that claim is a lie the shell then acts
+on (issue #18, dup #13). Every file is still attempted and reported — the
+per-file reporting is the product — but the final status carries the worst
+outcome. `clean` obeys the same honesty rule: a path it could not remove is a
+failure, not a shrug.
+
 ## Restore: no clobber
 
 Refusing to overwrite an existing file is the line between "reconstruct" and "overwrite." Reconstruction fills gaps; it does not replace what's already there. If the user wants to replace, they delete or move the existing file first. This is the same discipline as Shall's `sync` — check before acting.

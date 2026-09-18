@@ -383,7 +383,12 @@ fn cmd_restore(
             action::RestoreOutcome::Failed(p, why) => println!("failed:   {p} — {why}"),
         }
     }
-    Ok(0)
+    // Every recipe ran (failures do not stop the run), but the exit status
+    // must not claim success when anything failed.
+    let failed = outcomes
+        .iter()
+        .any(|o| matches!(o, action::RestoreOutcome::Failed(_, _)));
+    Ok(if failed { 1 } else { 0 })
 }
 
 fn cmd_teach(app: &App, path: &str, method: &str) -> Result<i32> {
@@ -444,11 +449,8 @@ fn cmd_clean(app: &App, scope: CleanScope, dry_run: bool, force: bool) -> Result
         }
         return Ok(0);
     }
-    if !force
-        && !confirm(&format!("Remove {} file(s)? [y/N] ", {
-            action::clean_preview(&catalog, &root, scope).len()
-        }))
-    {
+    let expected = action::clean_preview(&catalog, &root, scope).len();
+    if !force && !confirm(&format!("Remove {expected} file(s)? [y/N] ")) {
         println!("nothing removed");
         return Ok(0);
     }
@@ -461,7 +463,9 @@ fn cmd_clean(app: &App, scope: CleanScope, dry_run: bool, force: bool) -> Result
     catalog = next;
     app.save_catalog(&catalog)?;
     println!("removed {} file(s)", removed.len());
-    Ok(0)
+    // Same honesty rule as restore: a removal that did not happen is a
+    // failure the exit status must carry.
+    Ok(if removed.len() < expected { 1 } else { 0 })
 }
 
 fn confirm(prompt_liter: &str) -> bool {

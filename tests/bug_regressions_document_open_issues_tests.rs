@@ -66,9 +66,9 @@ fn import_rejects_paths_outside_the_root() {
     );
 }
 
-/// Open issue #18 — restore must return non-zero when any recipe fails.
+/// Fixed issue #18 (dup #13) — restore must return non-zero when any recipe
+/// fails, while still running (and reporting) the rest.
 #[test]
-#[ignore = "issue #18: chive restore exits 0 even when a recipe fails"]
 fn bug_restore_failure_is_a_nonzero_exit() {
     let env = Env::new("bug_restore_exit");
     env.put("f.txt", "x");

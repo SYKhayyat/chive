@@ -162,7 +162,7 @@ Variables in the recipe are substituted before execution:
 
 - `{dest}` — the absolute path where the file should appear on the target (`root + path`).
 
-Exit code 0 means success. Non-zero means failure; chive reports it and continues with other files.
+Exit code 0 means success. Non-zero means failure; chive reports it and continues with other files. A restore run where any recipe failed exits non-zero (1) — every file is still attempted and reported, but the process must not claim success. `clean` follows the same rule: any path that could not be removed makes the exit non-zero.
 
 ### Restore behavior
 

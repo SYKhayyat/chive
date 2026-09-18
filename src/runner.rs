@@ -46,9 +46,10 @@ pub trait Runner {
     /// Whether `program` is present on `PATH`.
     fn exists(&self, program: &str) -> bool;
 
-    /// Remove the file at `path`. Returns whether it was removed. The real
-    /// runner holds off under dry-run and reports non-removal via a normal
-    /// `false`, never an error: a missing file is simply "nothing to remove".
+    /// Remove the file at `path` (any type: file, symlink, dangling link).
+    /// Returns whether the path is gone afterwards. The real runner holds off
+    /// under dry-run; an already-absent path is success, not an error —
+    /// "nothing to remove" is the end state clean wants.
     fn remove_file(&self, path: &Path) -> bool;
 }
 
@@ -144,7 +145,13 @@ impl Runner for Real {
         if self.dry_run {
             return false; // preview: report nothing was removed, touch nothing
         }
-        std::fs::remove_file(path).is_ok()
+        match std::fs::symlink_metadata(path) {
+            // Already gone: the requested end state holds, so this is success
+            // (a dangling symlink counts as present and is removable).
+            Ok(_) => std::fs::remove_file(path).is_ok(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+            Err(_) => false,
+        }
     }
 }
 
