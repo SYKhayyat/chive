@@ -151,6 +151,14 @@ Compound extensions (`.tar.gz`) are special-cased because they're common and the
 
 The TOML file is the versionable artifact meant to be committed off-box. SQLite is a derived working index rebuilt from the TOML. This makes the catalog portable (commit the TOML, import on the new machine) and avoids the sync ambiguity of dual stores. See D9.
 
+"Truth" is enforceable only if the derived store is never *read* as one. A
+fallback from missing-TOML to the SQLite index lets the stalest copy win
+exactly when the owner believes they have no catalog (issue #22): delete the
+catalog, and the last index resurrects it — including entries for files long
+gone. Every command therefore reparses the TOML; the index is written, never
+consulted for truth. Delete the truth and chive says so (exit 4, "scan or
+import first").
+
 ## {dest} for package-owned files
 
 Package-owned files don't use `{dest}` because the package manager decides where they go. The recipe is "install the package" and the file appears at the OS-determined location. This is simpler and more portable than trying to replicate the package manager's layout logic.

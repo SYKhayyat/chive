@@ -51,18 +51,14 @@ impl App {
         &self.package
     }
 
-    /// Load the current catalog. TOML source of truth first; fall back to the
-    /// derived index (a machine that has scanned but not exported yet), else an
-    /// explicit "nothing yet" error.
+    /// Load the current catalog. The TOML file is the only truth (D9): the
+    /// derived index is never read as a fallback, because a stale index would
+    /// then impersonate a catalog the owner has deleted or replaced. No TOML
+    /// means no catalog — scan or import first.
     pub fn load_catalog(&self) -> Result<Catalog> {
         let truth = self.store.default_catalog_file();
         if truth.exists() {
             return toml::read(&truth);
-        }
-        let db_file = self.store.db_file();
-        if db_file.exists() {
-            let conn = db::open(&db_file)?;
-            return db::load(&conn);
         }
         Err(Error::MissingCatalog)
     }

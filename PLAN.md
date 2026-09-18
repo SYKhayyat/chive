@@ -7,7 +7,7 @@ Note: all 11 commits are ds-era (scaffolded 09-05/06) — review as new code, no
 - [x] #17 path escape: import/restore/clean can write/delete outside scan root → normalize+contain. (Critical) — FIXED: containment rule enforced in `Catalog` construction + action-time re-checks; spec rule V-path-containment.
 - [x] #18 restore exits 0 on failure → real exit codes (note: #13 is the same bug, DUP — work once). (High) — FIXED: restore exits 1 when any recipe fails (all still run + report); clean exits 1 when any removal fails; Real::remove_file treats an absent path as the wanted end state.
 - [x] #12 provenance order contract (docs say pkg→git→symlink, code runs reverse) → pick one, enforce. (High) — FIXED: code now runs the documented package→git→symlink order; pinned by provenance_order_is_package_then_git_then_symlink_tests.
-- [ ] #10 SQLite-vs-TOML truth decision → record, then fix #22 full reparse/rebuild. (Medium)
+- [x] #10 SQLite-vs-TOML truth decision → record, then fix #22 full reparse/rebuild. (Medium) — FIXED (D9 already ruled TOML-truth): `load_catalog` no longer falls back to reading the derived SQLite index — a stale index cannot impersonate a deleted/replaced catalog. Every command reparses the TOML (the "rebuild" #22 asked for is the only read path).
 
 ## Phase 2 — Correctness
 - [x] #19/#29 nested git basename (same root — work once). (High) — FIXED: detector probes the repo-relative path instead of the basename; unit + harness tests pin it.

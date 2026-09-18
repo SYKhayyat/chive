@@ -176,3 +176,29 @@ fn bug_xbps_adapter_extracts_the_package_name() {
         "xbps recipe must reinstall the package:\n{full}"
     );
 }
+
+/// Fixed issue #22 (root #10, D9) — the derived SQLite index is never read as
+/// truth: deleting the TOML catalog deletes the catalog, even though a stale
+/// index file is still lying around.
+#[test]
+fn a_stale_derived_index_is_never_read_as_the_catalog() {
+    let env = Env::new("bug_d9_truth");
+    env.put("f.txt", "x");
+    env.ok(&["scan", env.home.to_str().unwrap()]);
+
+    // the TOML truth + the derived index both exist now
+    let truth = env.store.join("catalog.toml");
+    assert!(truth.exists(), "scan wrote the TOML truth");
+    assert!(
+        env.store.join("catalog.db").exists(),
+        "derived index exists"
+    );
+
+    // lose the truth: the derived index must not impersonate it
+    std::fs::remove_file(&truth).unwrap();
+    let (_, code) = env.run(&["status"]);
+    assert_eq!(
+        code, 4,
+        "no TOML truth means no catalog; the derived index is not a fallback"
+    );
+}
