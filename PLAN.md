@@ -10,7 +10,7 @@ Note: all 11 commits are ds-era (scaffolded 09-05/06) — review as new code, no
 - [ ] #10 SQLite-vs-TOML truth decision → record, then fix #22 full reparse/rebuild. (Medium)
 
 ## Phase 2 — Correctness
-- [ ] #19/#29 nested git basename (same root — work once). (High)
+- [x] #19/#29 nested git basename (same root — work once). (High) — FIXED: detector probes the repo-relative path instead of the basename; unit + harness tests pin it.
 - [ ] #21 no-clobber brittle + TOCTOU. (High)
 - [ ] #26 no mkdir -p of dest parents. (High)
 - [ ] #28 absolute recipes kill portable restore. (High)

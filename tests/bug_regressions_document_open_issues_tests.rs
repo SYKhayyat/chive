@@ -7,9 +7,10 @@
 
 use crate::harness::Env;
 
-/// Open issue #19 — git provenance fails for tracked files not at the repo root.
+/// Fixed issue #19 (dup #29) — git provenance must work for tracked files not
+/// at the repo root (the detector asked git for the basename, not the path
+/// relative to the repo).
 #[test]
-#[ignore = "issue #19: nested git files are wrongly orphaned until fixed"]
 fn bug_git_nested_files_are_restorable() {
     let env = Env::new("bug_git_nested");
     let home = &env.home;

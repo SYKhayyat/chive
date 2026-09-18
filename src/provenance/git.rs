@@ -54,13 +54,15 @@ impl GitLocation {
 ///
 /// Uses `git -C <dir> ls-files --error-unmatch <rel>` for the actual check
 /// (what the spec requires) rather than trusting a directory named `.git`.
+/// `<rel>` is the file's path *relative to the candidate repo root* — probing
+/// the bare basename asks about a different file (issue #19) and wrongly
+/// orphans every tracked file below the repo root.
 fn git_location(runner: &dyn Runner, abs_path: &Path) -> Option<GitLocation> {
-    let file_name = abs_path.file_name()?.to_str()?.to_string();
     let mut dir = abs_path.parent()?;
     loop {
         // A candidate repo root must contain a .git entry (dir, file, or gitlink).
         if dir.join(".git").exists() {
-            let rel = relpath(dir, &file_name)?;
+            let rel = relpath(dir, abs_path)?;
             let ok = tracked(runner, dir, &rel)?;
             if ok {
                 return Some(GitLocation {
@@ -75,6 +77,8 @@ fn git_location(runner: &dyn Runner, abs_path: &Path) -> Option<GitLocation> {
 }
 
 /// Ask git whether `rel` is tracked under `repo`, using the given runner.
+/// `None` means git could not be run at all (no point walking further);
+/// `Some(false)` means this repo does not track it and the walk continues.
 fn tracked(runner: &dyn Runner, repo: &Path, rel: &str) -> Option<bool> {
     let out = runner
         .run_argv(
@@ -100,8 +104,10 @@ fn remote_of(runner: &dyn Runner, repo: &Path) -> Option<String> {
     }
 }
 
-fn relpath(repo: &Path, file_name: &str) -> Option<String> {
-    let f = std::fs::canonicalize(repo.join(file_name)).ok()?;
+/// `file` as a path relative to `repo`, via canonicalization so symlinked
+/// parents cannot break the prefix strip.
+fn relpath(repo: &Path, file: &Path) -> Option<String> {
+    let f = std::fs::canonicalize(file).ok()?;
     let r = std::fs::canonicalize(repo).ok()?;
     f.strip_prefix(&r).ok()?.to_str().map(|s| s.to_string())
 }
@@ -174,5 +180,42 @@ mod git_detector_tests {
         });
         let d = GitDetector::new(&mock);
         assert!(d.detect(&canonical).is_none());
+    }
+
+    #[test]
+    fn nested_file_is_probed_by_its_repo_relative_path_not_its_basename() {
+        // The regression behind issue #19: the detector must ask git about
+        // `nested/deep.toml`, never about `deep.toml`.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::create_dir_all(dir.path().join("nested")).unwrap();
+        let f = dir.path().join("nested/deep.toml");
+        std::fs::write(&f, "").unwrap();
+        let canonical = std::fs::canonicalize(&f).unwrap();
+
+        let mut mock = Mock::default();
+        mock.on_argv(|program, args| {
+            if program == "git" && args.contains(&"ls-files") {
+                let rel = *args.last().unwrap();
+                if rel == "nested/deep.toml" {
+                    Some(Mock::ok("nested/deep.toml"))
+                } else {
+                    // The basename (or anything else) is a different file:
+                    // untracked.
+                    Some(crate::runner::Output {
+                        stdout: String::new(),
+                        stderr: "not tracked".into(),
+                        code: Some(1),
+                    })
+                }
+            } else {
+                None
+            }
+        });
+        let d = GitDetector::new(&mock);
+        let r = d
+            .detect(&canonical)
+            .expect("nested tracked file is git-sourced");
+        assert!(r.restore_method.contains("nested/deep.toml"));
     }
 }
