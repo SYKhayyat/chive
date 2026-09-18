@@ -196,6 +196,12 @@ impl Env {
     /// Declare that `pkg` owns `home/<rel>` under fake manager `m`.
     pub fn own(&self, m: &str, rel: &str, pkg: &str) {
         let path = self.put(rel, "");
+        self.own_at(m, &path, pkg);
+    }
+
+    /// Declare ownership of an arbitrary path (e.g. a symlink that already
+    /// exists, which `own` cannot create because it writes a file).
+    pub fn own_at(&self, m: &str, path: &Path, pkg: &str) {
         let mut o = self.read_ownership();
         o.add(m, pkg, path.to_string_lossy().as_ref());
         o.write_to(&self.owners);

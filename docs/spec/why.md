@@ -41,6 +41,12 @@ Package ownership is checked first because it's the most reliable and portable: 
 
 The order matters: a file owned by a package that happens to be in a git repo should use the package recipe (more portable across machines) rather than the git recipe (requires the repo to exist).
 
+The order was once reversed in code (symlink first, "because it's cheap") —
+issue #12. The price of a probe is not the price of a recipe: symlink is still
+the cheapest *probe*, but precedence decides which recipe the machine runs
+next year, and a portable recipe is worth a few microseconds at scan time. The
+documented order is now pinned by tests so the two can't drift apart again.
+
 ## Teach and protect
 
 `chive teach` writes to an extension file (recipes.toml), never to program code. This is the direct lesson of Shall's adapter system: the tool is extended by writing the thing it reads. Teaching a new restore source never requires recompiling.

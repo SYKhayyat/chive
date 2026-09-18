@@ -17,6 +17,7 @@ mod harness;
 mod mark_and_teach_round_trip_across_reload_tests;
 mod mock_providers;
 mod package_provenance_through_the_real_path_tests;
+mod provenance_order_is_package_then_git_then_symlink_tests;
 mod restore_git_and_symlink_end_to_end_tests;
 
 /// The files that *are* wired in — the single source of truth for the suite.
@@ -26,7 +27,9 @@ const DECLARED: &[&str] = &[
     "bug_regressions_document_open_issues_tests",
     "cli_tests",
     "mark_and_teach_round_trip_across_reload_tests",
+    "mock_providers",
     "package_provenance_through_the_real_path_tests",
+    "provenance_order_is_package_then_git_then_symlink_tests",
     "restore_git_and_symlink_end_to_end_tests",
 ];
 

@@ -94,7 +94,9 @@ Every `restorable` entry has a `source`:
 
 ## Provenance detection (verified recipes)
 
-When chive scans a file, it checks provenance sources in this order. The first match wins:
+When chive scans a file, it checks provenance sources in this order. The first
+match wins. This order is load-bearing and pinned by tests
+(`provenance_order_is_package_then_git_then_symlink_tests`):
 
 1. **Package ownership**: The file is owned by an installed package.
    - Linux: `dpkg -S <abs>`, `pacman -Qo <abs>`, `rpm -qf <abs>`

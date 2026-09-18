@@ -9,7 +9,7 @@
 //!    automatic answer, including an inferred recipe and even a temporary
 //!    bloom. This is how `teach` overrules inference.
 //! 3. **temporary heuristic** — transient suffix/extension → `temporary`.
-//! 4. **provenance chain** — symlink → package → git → `restorable` (verified).
+//! 4. **provenance chain** — package → git → symlink → `restorable` (verified).
 //! 5. otherwise **orphaned**.
 //!
 //! Provenance runs lazily per file (each likely candidate is probed once and
@@ -48,12 +48,18 @@ impl<'a> Provenance<'a> {
         }
     }
 
-    /// Order: symlink first (cheap, no subprocess), then package, then git.
+    /// Order: package → git → symlink, first match wins. The order is the
+    /// documented, load-bearing contract: package recipes are the most
+    /// portable across machines, git recipes second (they need the repo), and
+    /// a plain `ln -s` last. Symlink is still the cheapest *probe*, so the
+    /// per-file cost only pays for the deeper sources when the file actually
+    /// is a link — the doc-comment speed argument lives in the probe cost,
+    /// not the precedence.
     fn detect(&self, abs: &Path) -> Option<Recipe> {
-        self.symlink
-            .detect(abs)
-            .or_else(|| self.package.detect(self.runner, abs))
+        self.package
+            .detect(self.runner, abs)
             .or_else(|| self.git.detect(abs))
+            .or_else(|| self.symlink.detect(abs))
     }
 }
 
@@ -320,7 +326,9 @@ mod scan_tests {
     fn symlink_becomes_restorable_verified() {
         #[cfg(unix)]
         {
-            let dir = build_dir();
+            // A plain tree: no .git (git would outrank the link under the
+            // documented order) and no package managers on the mock.
+            let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("target.txt"), "x").unwrap();
             std::os::unix::fs::symlink(dir.path().join("target.txt"), dir.path().join("link.txt"))
                 .unwrap();
@@ -332,6 +340,40 @@ mod scan_tests {
             assert_eq!(e.status, Status::Restorable);
             assert_eq!(e.source, Some(Source::Verified));
             assert!(e.restore_method.as_deref().unwrap().starts_with("ln -s"));
+        }
+    }
+
+    #[test]
+    fn provenance_order_is_package_then_git_then_symlink() {
+        #[cfg(unix)]
+        {
+            // A link inside a mock-tracked repo: the git recipe must win over
+            // ln -s even though the symlink probe is cheaper.
+            let dir = build_dir();
+            std::fs::write(dir.path().join("target.txt"), "x").unwrap();
+            std::os::unix::fs::symlink(dir.path().join("target.txt"), dir.path().join("link.txt"))
+                .unwrap();
+            let mut mock = Mock::default();
+            mock.on_argv(|program, args| {
+                if program == "git" && args.contains(&"ls-files") {
+                    Some(Mock::ok(""))
+                } else {
+                    None
+                }
+            });
+            let (cfg, pkg, recipes) = parts();
+            let s = Scanner::new(&mock, &pkg, &recipes, &cfg, &[]);
+            let files = s.scan(dir.path()).unwrap();
+            let e = files.iter().find(|e| e.path == "link.txt").unwrap();
+            assert_eq!(e.status, Status::Restorable);
+            assert!(
+                e.restore_method
+                    .as_deref()
+                    .unwrap()
+                    .contains("checkout HEAD"),
+                "git outranks symlink under the documented order, got: {:?}",
+                e.restore_method
+            );
         }
     }
 
