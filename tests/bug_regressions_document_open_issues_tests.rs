@@ -202,3 +202,182 @@ fn a_stale_derived_index_is_never_read_as_the_catalog() {
         "no TOML truth means no catalog; the derived index is not a fallback"
     );
 }
+
+// ---- open issues: each fails under `-- --ignored` against today's code ----
+
+/// Issue #32 — scan must never silently destroy the existing catalog: a
+/// nonexistent root must fail, and scanning a different root must leave the
+/// prior catalog's entries in place.
+#[test]
+#[ignore = "issue #32 — scan silently clobbers the existing catalog"]
+fn bug_32_scan_never_clobbers_an_existing_catalog() {
+    let env = Env::new("bug32_clobber");
+    env.put(".bashrc", "b");
+    env.put("work/notes.txt", "n");
+    env.ok(&["scan", env.home.to_str().unwrap()]);
+
+    // a nonexistent root must be an error, not an empty catalog
+    let (_, code) = env.run(&["scan", "/definitely/not/here"]);
+    assert_ne!(code, 0, "scanning a nonexistent path must fail");
+    assert!(
+        env.status_line(".bashrc").contains("bashrc"),
+        "a failed scan must leave the prior catalog untouched"
+    );
+
+    // scanning a subroot must not replace the whole-home catalog
+    let (_, code) = env.run(&["scan", env.home.join("work").to_str().unwrap()]);
+    assert_ne!(
+        code, 0,
+        "scanning a different root over an existing catalog must refuse"
+    );
+    assert!(
+        env.status_line(".bashrc").contains("bashrc"),
+        "the HOME catalog must survive a refused subroot scan"
+    );
+}
+
+/// Issue #33 — the chive store dir is never cataloged, so clean can never eat
+/// its own database.
+#[test]
+#[ignore = "issue #33 — chive catalogs (and clean deletes) its own store files"]
+fn bug_33_scan_excludes_its_own_store() {
+    let env = Env::new("bug33_store");
+    env.put(".bashrc", "b");
+
+    // default store location: ~/.config/chive inside the scanned home
+    let run = |args: &[&str]| {
+        let mut c = env.cmd();
+        c.env_remove("CHIVE_CONFIG_DIR");
+        let out = c.args(args).output().expect("chive should run");
+        (
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            out.status.code().unwrap_or(-1),
+        )
+    };
+
+    let home = env.home.to_str().unwrap().to_string();
+    // the store is written after the first scan's walk, so the bug shows on a
+    // rescan: the store now exists and the second walk catalogs it
+    run(&["scan", &home]);
+    run(&["scan", &home]);
+    let (status, _) = run(&["status"]);
+    assert!(
+        !status.contains(".config/chive"),
+        "chive must not catalog its own store:\n{status}"
+    );
+
+    let (_, code) = run(&["clean", "--scope", "orphaned", "--force"]);
+    assert_eq!(code, 0, "cleaning the real orphans must succeed");
+    assert!(
+        env.home.join(".config/chive/catalog.toml").exists(),
+        "the store must survive clean"
+    );
+    let (_, code) = run(&["status"]);
+    assert_eq!(code, 0, "the catalog must still be readable after clean");
+}
+
+/// Issue #34 — the scan root is canonicalized, so a relative `scan .` cannot
+/// make every later command resolve against whatever cwd it is run from.
+#[test]
+#[ignore = "issue #34 — relative scan root resolved against the invocation cwd"]
+fn bug_34_scan_root_is_canonicalized() {
+    let env = Env::new("bug34_relroot");
+    env.put("proj/important.conf", "keep");
+    let proj = env.home.join("proj");
+
+    let mut c = env.cmd();
+    c.current_dir(&proj);
+    c.args(["scan", "."]);
+    let out = c.output().expect("chive should run");
+    assert!(out.status.success(), "scan . must succeed");
+
+    let toml = std::fs::read_to_string(env.store.join("catalog.toml")).unwrap();
+    let root_line = toml
+        .lines()
+        .find(|l| l.starts_with("root"))
+        .expect("catalog has a root");
+    assert!(
+        root_line.contains(proj.to_string_lossy().as_ref()),
+        "the recorded root must be absolute, got {root_line}"
+    );
+
+    // from a different cwd, clean must target the real file (or refuse)
+    let (_, code) = env.run(&["clean", "--scope", "orphaned", "--force"]);
+    assert_eq!(code, 0, "clean must succeed against the canonical root");
+    assert!(
+        !proj.join("important.conf").exists(),
+        "clean must have removed the real file, not a cwd-relative phantom"
+    );
+}
+
+/// Issue #35 — the README's migration flow must actually work: a foreign-root
+/// catalog imported on a new machine restores under the new $HOME.
+#[test]
+#[ignore = "issue #35 — restore without --root targets the old machine's root"]
+fn bug_35_migration_flow_restores_into_home() {
+    let env = Env::new("bug35_migrate");
+    let exported = env.root.join("catalog.toml");
+    std::fs::write(
+        &exported,
+        "[meta]\nroot = \"/home/alice-old-machine\"\nscanned_at = \"2026-01-01T00:00:00+00:00\"\nhost = \"old\"\n\
+             [[files]]\npath = \".gitconfig\"\nstatus = \"restorable\"\n\
+             restore_method = \"printf '[user]\\n' > '{{dest}}'\"\nsource = \"user-supplied\"\nsize = 8\n",
+    )
+    .unwrap();
+
+    // the README flow, verbatim (README.md lines 33-38)
+    env.ok(&["import", "--from", exported.to_str().unwrap()]);
+    env.ok(&["plan", "restore", "--root", env.home.to_str().unwrap()]);
+    env.ok(&["restore", "--all"]);
+
+    assert!(
+        env.home.join(".gitconfig").exists(),
+        "the documented migration flow must restore into $HOME"
+    );
+    assert!(
+        !std::path::Path::new("/home/alice-old-machine").exists(),
+        "restore must never create the old machine's tree"
+    );
+}
+
+/// Issue #36 — the hostname is detected from the kernel, not from an env var
+/// that non-interactive shells never export.
+#[test]
+#[ignore = "issue #36 — hostname() reads only $HOSTNAME"]
+#[cfg(unix)]
+fn bug_36_hostname_is_detected_without_env() {
+    let env = Env::new("bug36_host");
+    env.put(".bashrc", "b");
+
+    let mut c = env.cmd();
+    c.env_remove("HOSTNAME");
+    c.args(["scan", env.home.to_str().unwrap()]);
+    let out = c.output().expect("chive should run");
+    assert!(out.status.success(), "scan must succeed");
+
+    let toml = std::fs::read_to_string(env.store.join("catalog.toml")).unwrap();
+    assert!(
+        !toml.contains("host = \"unknown\""),
+        "the kernel hostname must be used, got:\n{toml}"
+    );
+}
+
+/// Issue #37 — teach and mark agree on unknown paths.
+#[test]
+#[ignore = "issue #37 — teach silently succeeds where mark fails"]
+fn bug_37_teach_and_mark_agree_on_unknown_paths() {
+    let env = Env::new("bug37_teach");
+    env.put(".bashrc", "b");
+    env.ok(&["scan", env.home.to_str().unwrap()]);
+
+    let (_, teach_code) = env.run(&["teach", "no/such/file.txt", "--method", "echo x"]);
+    let (_, mark_code) = env.run(&["mark", "no/such/other.txt", "--status", "not-restorable"]);
+    assert_eq!(
+        teach_code, mark_code,
+        "sibling commands must agree on an unknown path; teach must not report success for a no-op"
+    );
+}
