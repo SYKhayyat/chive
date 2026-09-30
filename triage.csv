@@ -1,0 +1,22 @@
+number,title,url,D,R,why,risk
+1,D2 — Restore manager: trigger restore periodically or when files go missing,https://github.com/SYKhayyat/chive/issues/1,4,2,Scheduling/missing-set ruling needed; decision text only,No code risk yet
+2,D3 — Absence detection: what counts as 'absent' on a target machine,https://github.com/SYKhayyat/chive/issues/2,4,2,Define absent-set semantics first; decision text only,No code risk yet
+3,D4 — Off-box catalog placement / cloud sync of the catalog,https://github.com/SYKhayyat/chive/issues/3,4,2,Own-sync vs producer-only ruling; decision text only,No code risk yet
+4,D5 — Cross-platform recipes: per-OS variants vs one portable form,https://github.com/SYKhayyat/chive/issues/4,4,2,Recipe schema ruling; decision text only,No code risk yet
+5,D7 — Category taxonomy: MIME-type detection as a future improvement,https://github.com/SYKhayyat/chive/issues/5,4,1,MIME-vs-extension ruling; display-only field,Cosmetic only
+6,D12 — GUI (phase 2): framework decision then build it,https://github.com/SYKhayyat/chive/issues/6,4,2,Framework+surface decision precedes build; no code risk yet,No code risk yet
+7,D13 — Project license,https://github.com/SYKhayyat/chive/issues/7,4,1,Pick license + add text; legal metadata no behavior,No behavior change
+8,D1 — Language decision: record the ruling to close,https://github.com/SYKhayyat/chive/issues/8,4,1,Record Rust reality; register-only,No behavior change
+9,Verify on macOS and Windows,https://github.com/SYKhayyat/chive/issues/9,3,2,CI matrix + os-gated adapters; test-only until shipped,Test-only
+10,Lamdan L1/L2: SQLite derived index is ornamental in the common path,https://github.com/SYKhayyat/chive/issues/10,4,2,Use-or-delete index ruling; wasted writes no user data risk,Wasted writes only
+14,Lamdan L2: chive fabricates shell from untrusted data; taught-vs-generated trust boundary unenforced,https://github.com/SYKhayyat/chive/issues/14,4,5,Shell injection via git/symlink recipes + traversal; arbitrary exec,Arbitrary shell exec via crafted paths
+15,Lamdan L1: 'everything meaningful' vs defaults that skip build/dist/target and clean *.tmp,https://github.com/SYKhayyat/chive/issues/15,2,4,Ignore/temporary defaults silently skip or delete meaningful files,Silent skip or delete of meaningful files
+16,Lamdan L1/L2: cross-platform nominal categories decorative license contradicts D13,https://github.com/SYKhayyat/chive/issues/16,3,2,Scope/governance claims vs adapters; docs/metadata drift,Docs drift only
+23,Tech debt: dead code and dead fields,https://github.com/SYKhayyat/chive/issues/23,1,1,Delete dead API/fields per audit; no behavior change (audited D1),No behavior change
+25,Bug: real containers prove apk/rpm/dnf/xbps adapters broken,https://github.com/SYKhayyat/chive/issues/25,3,4,Parser regexes across adapters; wrong reinstall recipe runs silently,Wrong package reinstall runs silently
+32,[Critical/safety] scan silently clobbers the existing catalog,https://github.com/SYKhayyat/chive/issues/32,2,5,Guard missing/subroot scan; exit-0 destroys sole catalog irreversibly,Irreversible catalog destruction exit 0
+33,[High/safety] chive catalogs its own store files; clean deletes catalog.db,https://github.com/SYKhayyat/chive/issues/33,2,5,Exclude store dir; orphaned clean deletes catalog.db/toml itself,Self-deletion of store
+34,[High/safety] relative scan root recorded as-is; later commands corrupt catalog,https://github.com/SYKhayyat/chive/issues/34,3,5,Canonicalize root at scan + fix clean/plan/restore to use recorded root (audited D3),Wrong-cwd clean drops live entries exit 0
+35,[High/safety] README migration flow restores into OLD machine root,https://github.com/SYKhayyat/chive/issues/35,3,4,Fix --root default + orphan visibility; migration fails or silently skips,Failed migration or silently skipped files
+36,[Medium/bug] catalog records host unknown; hostname reads only HOSTNAME,https://github.com/SYKhayyat/chive/issues/36,1,2,Read kernel hostname; wrong machine identity metadata,Wrong machine identity only
+37,[Low/UX] teach accepts nonexistent path and reports success; mark rejects it,https://github.com/SYKhayyat/chive/issues/37,1,2,Align teach/mark validation; misleading success text only,Misleading success text only
