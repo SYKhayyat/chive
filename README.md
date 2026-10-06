@@ -86,6 +86,35 @@ chive clean              # confirm, then remove disposable files
 
 `clean` only ever touches `disposable` files.
 
+## Settings
+
+```bash
+chive config init     # write a commented config.toml
+chive config show     # what chive is actually using
+```
+
+Two judgement calls, both three-level, both defaulting to the answer that cannot
+lose data:
+
+```toml
+[policy.restore]
+# refuse (default) | backup | overwrite — what to do when the file already exists
+overwrite = "refuse"
+
+[policy.catalog]
+# home-only | warn (default) | any — how far outside your home an imported
+# catalog's root may point
+root_scope = "warn"
+```
+
+`root_scope` defaults to `warn` rather than `home-only` because a catalog written
+on another machine names *that* machine's root, so refusing outside-home would
+refuse the migration chive exists for. chive names the root when it imports one,
+which is the only moment you can notice it is wrong.
+
+An empty, relative, or `/` root is refused regardless — no setting makes `/`
+acceptable, because it would place every absolute path inside the root.
+
 ## Rules
 
 Tell chive what is disposable in your own words, in `config.toml`:
@@ -121,6 +150,8 @@ The catalog is plain text (TOML). It lives off-box — committed to a repo, or o
 | `chive plan restore` | Preview restore without running |
 | `chive restore <path...>` | Re-derive files by recipe |
 | `chive restore --all` | Restore every restorable file |
+| `chive config init` | Write a commented `config.toml` with every setting at its default |
+| `chive config show` | Print the settings actually in effect |
 | `chive holes` | List what cannot be rebuilt, largest first |
 | `chive teach <path> --method "<cmd>"` | Teach a recipe |
 | `chive dispose <path>` | Judge a file a known gap (cleanable) |

@@ -47,10 +47,10 @@ Ruled as **D17**; rationale in `docs/spec/why.md`.
 
 **From the 2026-10-06 lamdan audit** (`docs/lamdan/whole-repo-2026-10-06.md`). All four verified against the release binary; each destroys files and exits 0.
 
-- [ ] #47 `Catalog.root` is unvalidated, so an imported catalog chooses where `clean` deletes. `meta.root` is the anchor every containment check is relative to and it is stored verbatim; `root = "/"` is accepted. The entry-path traversal rules are sound — they constrain the *relative* part. ~15 lines; uses `Error::Refused` (exit 3), currently constructed nowhere.
-- [ ] #48 `contained()` is `starts_with`, so a symlink inside the root escapes it. A real home is full of symlinks. Fix by making the join fallible and loud (`Catalog::resolve`) so a containment failure exits 3 instead of exiting 0 having deleted the wrong thing.
-- [ ] #21 **REOPENED** — no-clobber is a substring test. `dest` is computed only when the recipe contains the literal `{dest}`, so no git-tracked file is ever protected: `restore` on a dotfiles repo destroyed a local edit and reported "restored". `action.rs:83`'s rationale is false. Needs a ruling on package recipes.
-- [ ] #49 `restored:` means "the recipe exited 0", not "the file is there" — #18's lie one level down. Blocked by #21 (today `dest` is `None` for git recipes, so there is nothing to check).
+- [x] #47 `Catalog.root` was unvalidated, so an imported catalog chose where `clean` deleted — **FIXED (bcc7552) with D25.** Refused at `Catalog::new`; the judgement half is `policy.catalog.root_scope`. Verified: `root = "/"` refused; a root outside home exits 3 under `home-only`, and is accepted *and named* under `warn`.
+- [x] #48 `contained()` was `starts_with`, so a symlink escaped — **FIXED (bcc7552).** `resolve_under` canonicalises the deepest existing ancestor and re-checks; `clean` refuses (exit 3) rather than skipping. Verified: a `sub/link -> ../../outside` entry is refused and the outside file survives.
+- [x] #21 **REOPENED then FIXED (bcc7552) with D24** — no-clobber was a substring test, so no git-tracked file was protected. Every entry now gets a `dest`; `policy.restore.overwrite` decides (`refuse`/`backup`/`overwrite`). Verified: a local edit in a dotfiles repo survives `restore`, and `backup` preserves the old bytes at `<dest>.chive-backup`.
+- [x] #49 `restored:` meant "exit 0" — **FIXED (bcc7552).** A zero exit that leaves no file is a failure naming the path, exit 1. Shall's rule: a fetch that quietly returned nothing would report success over a command that never ran.
 - [ ] #32 scan silently clobbers the existing catalog: a nonexistent root scans as an EMPTY catalog (walk error swallowed), a subroot scan replaces the whole-HOME catalog — both exit 0. (Critical) — audit 09-19, sandbox-verified.
 - [ ] #33 chive catalogs its own store files (store dir never excluded from scan); `clean --scope orphaned` deletes catalog.db/catalog.toml, resurrected only by the trailing save. (High) — audit 09-19, sandbox-verified. **NOTE 10-06:** `--scope orphaned` is gone with D19; `clean` now removes only `disposable`, so the self-deletion half shrinks to the provable-dead and owner-disposable paths. Re-audit against the new model.
 - [ ] #34 relative scan root recorded as-is ("."): plan/restore/clean resolve it against the invocation cwd — clean from elsewhere reports removals that never happened and silently drops live entries. (High) — audit 09-19, sandbox-verified.
@@ -61,11 +61,11 @@ Ruled as **D17**; rationale in `docs/spec/why.md`.
 - [x] #10 SQLite-vs-TOML truth decision → record, then fix #22 full reparse/rebuild. (Medium) — FIXED (D9 already ruled TOML-truth): `load_catalog` no longer falls back to reading the derived SQLite index — a stale index cannot impersonate a deleted/replaced catalog. Every command reparses the TOML (the "rebuild" #22 asked for is the only read path).
 
 ## Phase 2 — Correctness
-- [ ] #50 package ownership probe runs **twice** per file (~60,000 spawns on a 5,000-file home). #30's fix hoisted the `--version` probe, not this one, and the regression test asserts only on `version_probe_count()` — so the suite is structurally blind to the whole class. ~15 lines: probe once, thread the `Recipe` forward.
-- [ ] #51 `owns_under` prefix prefilter. Six argv adapters fork per file including every file under `$HOME`; `brew` already declares a `path_prefix` and costs zero. Do with #51, not instead of it — together they take a scan from minutes to seconds.
-- [ ] #55 a user adapter cannot override a *confidently wrong* built-in. It only wins when the built-in is silent, which is exactly not #24's defect class (apk captured the path, rpm captured `pkg-version`, xbps asked the wrong flag — all produced a *match* with a garbage name). `backends.toml` says "to improve a manager, edit its row"; the code makes improve and add different powers. Also: `read_dir` order is unspecified, and an incoherent `Manager` row silently never claims anything.
+- [x] #50 the package ownership probe ran **twice** per file — **FIXED (9ca1a1d).** Probed once and threaded forward; `owning_package` deleted. The blind spot: #30's regression test asserted only on `version_probe_count()`, so it could not see this class at any size.
+- [x] #51 `owns_under` prefix prefilter — **FIXED (9ca1a1d).** Measured on 400 files: 400 ownership probes → 0, 2.58s → 0.076s. Two wrong versions came first (a raw `starts_with` skipped every adapter on a home scan; a tail match was wrong because a prefix names a directory).
+- [x] #55 a user adapter could not override a *confidently wrong* built-in — **FIXED (d6da240).** A colliding `name` replaces in place and keeps its position; `read_dir` order sorted; PermissionDenied no longer swallowed as "no adapters dir". Not done: incoherent `Manager` rows still fail silently rather than at load.
 - [ ] #56 "apply the governing act to this path" has two owners (`scan.rs::entry_for` and inline in `cmd_teach`/`cmd_dispose`) and they have already diverged: `withdraw` on a taught-but-absent path claims `present = true`. Also two whole-catalog saves per `withdraw`, the first of which persists a catalog where the log says withdrawn and the view still says cleanable. **This is what makes #41 cheap.**
-- [ ] #54 a rule-authored `unknown` is stamped `Origin::Chive`, so it is non-sticky — contradicting D22. Needs an owner ruling on whether to narrow D21's rule vocabulary (`rewrite`, ~25 lines + amendment) or just pass the origin through (`~5 lines`).
+- [x] #54 a rule-authored `unknown` was stamped `Origin::Chive` — **FIXED (e3e6084).** `new_hole` takes the origin; D22's stickiness now holds for rules on every verdict. Took the cheap option; narrowing D21's rule vocabulary would have been a register item.
 - [ ] #35 README migration flow restores into the OLD machine's root: `restore --all` without `--root` expands `{dest}` against the imported stale root; imported orphans restore invisibly. (High) — audit 09-19, sandbox-verified.
 - [ ] #36 catalog records host = "unknown": `hostname()` reads only `$HOSTNAME`, unset in non-interactive shells. (Medium) — audit 09-19, sandbox-verified.
 - [x] #38 the four statuses answer two questions at once, so "chive cannot explain this file" is recorded as "safe to delete" — three verdicts (restorable / unknown hole / disposable known-gap), unknown never cleanable. (High) — **FIXED 10-06 with D19:** `Status` -> `Verdict`, four -> three. Only the owner (or an owner rule) may produce `disposable`; chive's own authority is limited to provable-dead, now just dangling symlinks (see D21 note). `protect`/`not-restorable`/`mark` deleted as verbs, not deprecated — protection is the default rather than an act. Supersedes D14. Rules engine landed with it (D21, Rhai; musl-static forbids embedded Python). Implements the root of #15.
@@ -90,7 +90,7 @@ Ruled as **D17**; rationale in `docs/spec/why.md`.
 - [ ] #61 spec CLI output blocks are unchecked by anything and have already drifted six ways, including `clean --dry-run` documented as prompting for confirmation. Convert to golden-output assertions.
 - [ ] #59 `Evidence`/`Decision` split — four constructors are one entry shape with four flags, and the hardcoded origin in `new_unknown` is where #54 leaks. **Do before #41, not during**: `Origin` names *who* but not *which decision*, so a folder verdict inherited by a child cannot say so — exactly the lie #41 forbids flat rendering from telling.
 - [ ] #57 `CHIVE_DRY_RUN` leaks into the test suite (verified: 3 failures), and `HOSTNAME` into every catalog. `Real::dry_run` fakes *results* rather than skipping actions, so a dry-run scan's verdicts differ from a real scan's — and app.rs's unit tests assert those from a fiction.
-- [ ] #58 `hermetic_git_env_once` is a real data race (`Once` serialises writers, not readers) whose SAFETY comment asserts the race does not exist. Fix by pinning the vars per child, deleting the `Once` and the `unsafe`.
+- [x] #58 `hermetic_git_env_once` was a real data race — **FIXED (e3e6084).** `GIT_ENV` is applied to every child *and* to `git_repo`; the `Once`, the `unsafe`, and the SAFETY comment asserting the race did not exist are deleted. SIGPIPE moved from `cli::run` into `main`.
 - [ ]  asserts on stdout strings; the catalog TOML is the machine-readable product and is read exactly once, by hand. Plus #60 (D21 rules and D22's retracting half have zero end-to-end coverage).
 - [ ] #62 `docs/SUMMARY.md` is 85% derivative with zero inbound links and asserts a capability deleted two commits ago.
 - [ ] #37 teach accepts a nonexistent path and reports success (exit 0) while mark rejects it — sibling validation drift. (Low) — audit 09-19, sandbox-verified. **NARROWED 10-06:** the absent-path half is wrong-by-framing and is owned by #45 (that case is legitimate, not drift); #37 keeps only the honest half — malformed or root-escaping paths must be rejected by both verbs.
@@ -112,6 +112,15 @@ its own claims that died under verification.
 
 **Read it before starting any Phase 1–4 item filed after 2026-10-06** — several
 of those findings change what the fix should be, not just how hard it is.
+
+**Still open from that audit:** #52 (the container harness is permanently red —
+every distro FAILs), #56 (apply-the-log has two owners and has diverged; this is
+what makes #41 cheap), #59 (Evidence/Decision split — do before #41), #60 (the
+suite asserts on stdout; D21 rules and D22's retracting half have no end-to-end
+coverage), #61 (spec output blocks unchecked, six drifts), #62 (SUMMARY.md stale),
+#10 (delete the write-only SQLite index — Shall has no index at 142k lines). Plus
+one filed late: an incoherent `Manager` row still fails silently rather than at
+load, which was part of #55 and deliberately not half-landed with it.
 
 ## Routing rule for new issues
 Any AI opening an issue here MUST put safety/boundary items in Phase 1 and decisions in Phase 3 order — never append a feature above #17/#18. Duplicates of one root cause get folded into the existing line. See AI_ISSUE_ROUTING.md.

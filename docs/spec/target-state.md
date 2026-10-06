@@ -45,8 +45,52 @@ in memory:
 - no NUL.
 
 `chive import` refuses a catalog whose entries break the rule; `restore` and
-`clean` re-check that a joined path still falls under the root before touching
+`clean` re-check that a joined path still lands under the root before touching
 the filesystem (defense in depth). A refused import leaves the store untouched.
+
+Two things the re-check must do that a string prefix cannot:
+
+- The check is against **canonicalised** paths. `starts_with` compares spellings,
+  so a symlink under the root satisfies it while every later filesystem call
+  follows the link out. `clean` *refuses* such an entry (exit 3) rather than
+  skipping it, because a containment failure that exits 0 having removed something
+  else is the failure this rule exists to prevent.
+- The check is against **the root chive is about to act against**, not the root the
+  catalog was written against. On a fresh machine those differ, and checking the
+  catalog's own root would prove nothing about where the write lands.
+
+`meta.root` itself is validated at construction: empty, relative, and `/` are
+refused outright. `policy.catalog.root_scope` governs only the judgement call of
+whether a root outside your home is acceptable.
+
+## Policies (config.toml)
+
+Two judgement calls live in `config.toml`, both three-level, both defaulting to
+the answer that cannot lose data. `chive config init` writes a commented
+template; `chive config show` prints what is actually in effect.
+
+```toml
+[policy.restore]
+# What restore does when the file it is about to write already exists (D24).
+#   refuse    — never overwrite. The default, and D15 as written.
+#   backup    — copy the existing file to <dest>.chive-backup, then replace it.
+#   overwrite — replace without asking. The escape hatch.
+overwrite = "refuse"
+
+[policy.catalog]
+# How far outside your home an imported catalog's root may point (D25).
+#   home-only — refuse a root outside your home.
+#   warn      — accept it, and name it on import. The default.
+#   any       — accept anything, silently.
+root_scope = "warn"
+```
+
+`root_scope` defaults to `warn` rather than `home-only` because a catalog written
+on another machine names *that* machine's root, which by construction is not your
+home; refusing outside-home by default would refuse the migration chive exists
+for. Independent of this setting, an empty, relative, or `/` root is refused at
+construction — no configuration makes `/` acceptable, because it would place every
+absolute path inside the root.
 
 ## Catalog root
 
@@ -150,6 +194,15 @@ Rules are how the owner states the policy that `temporary` used to guess at. A
 rule can see things a filename cannot — whether a symlink resolves, which
 package owns the file — which is why the policy moved from a hardcoded
 heuristic to the owner's config rather than being deleted with `temporary`.
+
+A rule that matches assigns its verdict with `verdict_source = "rule"`, on every
+verdict it can return — the origin drives stickiness (D22), and a rule is owner
+policy, so a rule's `unknown` is as sticky as an owner's.
+
+The engine is bounded in **time and space**: an operation cap, plus caps on
+string, array and map size. The operation cap alone is not enough — a script can
+stay inside its operation budget and still allocate gigabytes — so a runaway rule
+is stopped and the failure names the bound it hit.
 
 ## Source
 
@@ -270,7 +323,9 @@ Exit code 0 means success. Non-zero means failure; chive reports it and continue
 
 - `chive restore <path...>` — restore named files.
 - `chive restore --all` — restore every `restorable` file.
-- Before executing, chive checks if `{dest}` already exists. If it does, chive **refuses to act** on that file (no clobber). The user must delete or move it first. The check passes only if the parent directory creation would also be pointless: the check precedes any filesystem change.
+- Before executing, chive checks whether `{dest}` already exists, for **every** entry — the destination is `root + path`, not only for recipes that name `{dest}` literally. A git recipe places the file at exactly that path, so exempting it would leave every git-tracked file unprotected. If the file is there, `policy.restore.overwrite` decides: `refuse` (default) stops, `backup` copies it to `<dest>.chive-backup` first, `overwrite` replaces it.
+- The check precedes any filesystem change, so a refused restore leaves no directories behind.
+- A recipe that exits 0 but leaves no file at `{dest}` is a **failure**, reported with the missing path and a non-zero exit. A restore that did not happen is never reported as one.
 - For a `{dest}` recipe, chive creates the destination's parent directory before running the recipe. A fresh machine has none of the directories the source layout implies; a recipe should describe how to re-derive the file, not the scaffolding around it.
 - `chive plan restore` — preview every restore action without executing. Prints the recipe and `{dest}` for each file. This is the "see what can be restored and how" view.
 

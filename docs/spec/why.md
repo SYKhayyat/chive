@@ -310,7 +310,62 @@ Runner seam, after the no-clobber check (a refused restore must not leave
 directories behind), and never for recipes without `{dest}` — package
 managers place their own files.
 
-## Restore: no clobber
+## No-clobber applies to every entry, and what it does is config
+
+The rule used to be a substring test. `build_plan` computed a destination only when
+the recipe contained the literal `{dest}`, so the no-clobber check never ran for a
+git recipe — and a git recipe places the file at exactly `root + path`, which chive
+has both halves of in hand when it builds the plan. Verified: `restore` on a dotfiles
+repo overwrote a local edit and reported `restored:`, exit 0.
+
+A comment rationalised it — *"package and git recipes place files themselves and have
+no local dest."* That is false for git, and it is the kind of comment that survives
+because a maintainer reads it and agrees.
+
+What happens when the file *is* there is D24, and it is config rather than a fixed
+rule because the answer is genuinely the owner's. Shall's precedent is the same shape:
+`is_deployed_shim` overwrites only what it can prove is yours, `copy_over` backs up
+before replacing, and `config init` / `export` refuse without `--force`. Three
+levels rather than a bool, so the escape hatch is named instead of implied by a
+boolean's absence — and the strict one is the default, because a safety property you
+must opt *out* of is not a safety property.
+
+`backup` writes `<dest>.chive-backup`, mirroring Shall's `<target>.shall-backup`.
+
+## A restore that produced nothing is a failure
+
+`restored:` used to mean "the recipe exited 0". `teach` accepts any string, so
+`chive teach x --method true` reported a restore that never happened and exited 0 —
+issue #18's lie one level down, where #18 exists because *"a run that restored nine
+files and failed on the tenth must not exit 0 — that claim is a lie the shell then
+acts on."*
+
+Shall states the rule this is an instance of: *"an action that fetches something throws
+on failure, because a fetch that quietly returned nothing would let a hook report
+success over a command that never ran."* The general form — a lookup may answer "no",
+a fetch must not — is worth carrying: it is the difference between an honest negative
+and a silent success.
+
+## Containment is about the filesystem, not the spelling
+
+`starts_with` compares strings, so it cannot see a symlink under the scan root — and
+every subsequent filesystem call follows one. A real home is full of symlinks, and on a
+`/nix/store`-backed home it is the normal case. Verified: an entry reached through a
+symlinked directory was deleted outside the root, exit 0.
+
+The re-check canonicalises the deepest existing ancestor and re-appends the tail, so it
+answers about the filesystem. The file itself may not exist yet (a restore creates it)
+but its parent must be real. And `clean` refuses rather than skipping: a containment
+failure that silently drops entries, or worse removes something else and exits 0, is
+the failure the rule exists to prevent.
+
+`meta.root` is the anchor all of this is relative to, and it was stored verbatim — so a
+catalog chose where `clean` deleted, and `root = "/"` was accepted. Empty, relative and
+`/` are now refused at construction: no setting turns those off, because they are a
+malformed catalog rather than a judgement call. Shall draws the same line in
+`safe_relative`, which drops `..`, roots and drive prefixes outright.
+
+## Restore creates the destination's parent
 
 Refusing to overwrite an existing file is the line between "reconstruct" and "overwrite." Reconstruction fills gaps; it does not replace what's already there. If the user wants to replace, they delete or move the existing file first. This is the same discipline as Shall's `sync` — check before acting.
 

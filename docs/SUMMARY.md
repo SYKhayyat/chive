@@ -48,6 +48,14 @@ script = '''
 '''
 ```
 
+## Settings
+
+Two judgement calls in `config.toml`, both three-level, both defaulting to the
+answer that cannot lose data: `policy.restore.overwrite`
+(`refuse`/`backup`/`overwrite`) and `policy.catalog.root_scope`
+(`home-only`/`warn`/`any`). `chive config init` writes a commented template and
+refuses to clobber an existing one; `chive config show` prints what is in effect.
+
 ## Verdicts
 
 | Verdict | Meaning |
@@ -74,7 +82,7 @@ The catalog TOML is the source of truth. SQLite is a derived index.
 
 ## MVP scope
 
-- CLI with: scan, status, holes, plan, restore, teach, dispose, withdraw, clean, export, import, stats
+- CLI with: scan, status, holes, plan, restore, teach, dispose, withdraw, clean, export, import, stats, config
 - Provenance detection: package ownership, git work-tree, symlinks
 - Three verdicts (restorable / unknown / disposable) with owner-only disposal
 - Ordered owner-act log in the catalog, re-applied (never reordered) by rescan
