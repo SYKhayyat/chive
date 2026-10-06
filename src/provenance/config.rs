@@ -114,24 +114,53 @@ impl Table {
 
     /// Load the built-in set plus every user adapter under `adapters_dir`.
     ///
-    /// User tables append to the built-ins, so a user adapter can add a manager
-    /// chive has never heard of. Order respects that a user's very own manager
-    /// is consulted after the stock ones (the stock adapters win ties), which
-    /// keeps built-in behaviour predictable.
+    /// A user row **replaces** a built-in row of the same `name`, in place,
+    /// keeping its position. Non-colliding rows append, so stock adapters still
+    /// win ties between themselves.
+    ///
+    /// Replacing rather than appending is what makes `backends.toml`'s promise
+    /// true — *"to improve an existing manager, edit its row."* Appending made
+    /// "improve" and "add" different powers, and only in the case that matters
+    /// least: a user row was consulted only when the built-in was *silent*, never
+    /// when the built-in was *confidently wrong*. That is precisely issue #24's
+    /// defect class — apk's regex captured the path, rpm's captured
+    /// `pkg-version`, xbps asked the wrong flag — where each produced a *match*
+    /// with a garbage name, so the user's corrected row sat in the table and was
+    /// never reached. The user could add a manager chive had never heard of, and
+    /// could not fix one it had heard of and got wrong.
+    ///
+    /// The order is fixed by sorting the file list: `read_dir` order is
+    /// unspecified, and in a region whose load-bearing guarantee is a
+    /// deterministic precedence order, unspecified half the input is a hole in
+    /// that guarantee.
     pub fn load(adapters_dir: &Path) -> Result<Table> {
         let mut table = Table::builtin()?;
-        let entries: Vec<std::path::PathBuf> = match std::fs::read_dir(adapters_dir) {
+        let mut entries: Vec<std::path::PathBuf> = match std::fs::read_dir(adapters_dir) {
             Ok(read) => read
                 .flatten()
                 .filter(|e| e.path().extension().is_some_and(|e| e == "toml"))
                 .map(|e| e.path())
                 .collect(),
-            Err(_) => return Ok(table), // no adapters dir yet
+            // Only an absent directory is "no adapters yet". A permission error
+            // used to be swallowed the same way, silently disabling every user
+            // adapter while reporting success.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(table),
+            Err(e) => {
+                return Err(Error::Catalog(format!(
+                    "cannot read {}: {e}",
+                    adapters_dir.display()
+                )));
+            }
         };
+        entries.sort();
         for path in entries {
             let text = std::fs::read_to_string(&path).map_err(Error::Io)?;
-            let t = Table::from_str(&text, &path)?;
-            table.managers.extend(t.managers);
+            for row in Table::from_str(&text, &path)?.managers {
+                match table.managers.iter_mut().find(|m| m.name == row.name) {
+                    Some(slot) => *slot = row,
+                    None => table.managers.push(row),
+                }
+            }
         }
         Ok(table)
     }

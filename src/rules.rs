@@ -17,6 +17,28 @@ use std::path::Path;
 
 use rhai::{Dynamic, Engine, Scope};
 
+/// A rule runs once per file, so the budget is per-file rather than per-invocation
+/// and is far tighter than a hook's would be: 10,000 operations is ample for
+/// `path.ends_with(".apk")` and far below what a wedged loop reaches. Rhai
+/// counts operations, not seconds, so the bound is not wall-clock.
+const MAX_OPERATIONS: u64 = 10_000;
+
+/// Space bounds, which the operation cap does not cover.
+///
+/// A script can stay inside its operation budget and still exhaust memory: build
+/// one string by repeated concatenation and you have allocated gigabytes inside
+/// ten thousand operations. Shall sets all three for exactly this reason
+/// (`src/core/rhai_stdlib.rs`) — *"without them an approved script can grow one
+/// string or array into the gigabytes inside its operation budget and take the run
+/// — or the machine — down with it."* A rule here is less trusted than Shall's
+/// (no shell, no filesystem), but a runaway is still a runaway.
+///
+/// Sized for a per-file predicate. Nothing a rule legitimately computes over one
+/// path approaches these.
+const MAX_STRING_BYTES: usize = 1 << 20; // 1 MiB
+const MAX_ARRAY_ITEMS: usize = 100_000;
+const MAX_MAP_ITEMS: usize = 100_000;
+
 use crate::error::{Error, Result};
 use crate::model::Verdict;
 
@@ -71,7 +93,12 @@ impl Rules {
     /// scan — a rule that silently stops matching would quietly change verdicts.
     pub fn compile(rules: &[Rule]) -> Result<Rules> {
         let mut engine = Engine::new();
-        engine.set_max_operations(10_000);
+        // Operations bound *time*; the three below bound *space*. Both are
+        // needed, and having only the first is the gap Shall's stdlib names.
+        engine.set_max_operations(MAX_OPERATIONS);
+        engine.set_max_string_size(MAX_STRING_BYTES);
+        engine.set_max_array_size(MAX_ARRAY_ITEMS);
+        engine.set_max_map_size(MAX_MAP_ITEMS);
         // No filesystem, no process, no network: the sandbox is the point, so
         // nothing here widens it.
         engine.disable_symbol("eval");
@@ -265,6 +292,68 @@ mod rules_tests {
             r.evaluate(&facts("x")).is_err(),
             "a wrong return value must not pass silently"
         );
+    }
+
+    /// Assert a runaway was stopped and that the failure names a bound, without
+    /// asserting *which* one fired.
+    ///
+    /// I checked which fires: for a loop, the operation cap wins, because each
+    /// iteration is an operation. The space caps are for the other shape — a
+    /// script that allocates a great deal in few operations — and a test that
+    /// claimed to be exercising the string cap while the operation cap did the
+    /// work would be asserting a mechanism it never reached.
+    fn assert_runaway_stopped(script: &str) {
+        let r = rules(&[script]);
+        let err = r
+            .evaluate(&facts("x"))
+            .expect_err("a runaway script must be stopped");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            [
+                "operation",
+                "size",
+                "string",
+                "array",
+                "map",
+                "memory",
+                "limit"
+            ]
+            .iter()
+            .any(|w| msg.contains(w)),
+            "the failure must name the bound it hit, got {err}"
+        );
+    }
+
+    #[test]
+    fn a_runaway_loop_is_stopped_and_says_which_bound() {
+        assert_runaway_stopped(
+            r#"
+            let s = "";
+            for i in 0..100000 { s += "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; }
+            s
+        "#,
+        );
+    }
+
+    #[test]
+    fn a_runaway_array_is_stopped_and_says_which_bound() {
+        assert_runaway_stopped(
+            r#"
+            let a = [];
+            for i in 0..1000000 { a.push(i); }
+            "disposable"
+        "#,
+        );
+    }
+
+    #[test]
+    fn an_ordinary_rule_is_nowhere_near_any_bound() {
+        // Guards the other direction: a bound set so tight that real rules trip it
+        // is a bound nobody will trust.
+        let r = rules(&[r#"if path.ends_with(".apk") && size > 0 { "disposable" } else { () }"#]);
+        let mut f = facts("pkg.apk");
+        f.size = 1024;
+        assert_eq!(r.evaluate(&f).unwrap().unwrap().0, Verdict::Disposable);
     }
 
     #[test]
