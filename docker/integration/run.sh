@@ -5,7 +5,7 @@
 # package into it (warming the ownership DB), copies in the *released chive
 # binary* and a fixture tree, and lets chive scan that tree as a human would.
 # This is where the adapters in `src/provenance/backends.toml` are tested: the
-# real `dpkg -S` / `pacman -Qo` / `rpm -qf` / `apk info -W` / `xbps-query -f`
+# real `dpkg -S` / `pacman -Qo` / `rpm -qf` / `apk info -W` / `xbps-query -o`
 # output is what chive actually sees, so the probe commands and `name_match`
 # regexes are validated against reality (not a mock or a fixture).
 #
@@ -24,7 +24,15 @@ DOCKER="${DOCKER:-docker}"
 CTX="$REPO_ROOT/docker/integration/context"
 DISTROS="${DISTROS:-ubuntu arch fedora alpine}"
 
-[ -x "$CTX/chive" ] || { echo "FATAL: $CTX/chive is missing. Run: cargo build --release && cp target/release/chive $CTX/chive"; exit 1; }
+# The recovery instruction used to be `cargo build --release && cp ... $CTX/chive`,
+# which cannot work twice over: a release build is dynamically linked (the images
+# have no /nix/store to find its interpreter) and `$CTX` is gitignored, so it does
+# not exist on a fresh clone and the `cp` fails on its own.
+[ -x "$CTX/chive" ] || {
+    echo "FATAL: $CTX/chive is missing or is not executable."
+    echo "Build it with:  ./docker/integration/build-static.sh"
+    exit 1
+}
 # Stage the canonical scenario script into the (gitignored) build context.
 cp "$REPO_ROOT/docker/integration/run-in-container.sh" "$CTX/run-in-container.sh"
 chmod +x "$CTX/chive" "$CTX/run-in-container.sh"

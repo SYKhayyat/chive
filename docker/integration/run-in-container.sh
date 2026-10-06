@@ -9,16 +9,18 @@
 # Two phases, two stores (scanning overwrites the one catalog):
 #   A. scan a REAL package dir (/usr/bin) -> every binary is package-owned; the
 #      adapter's probe command + name_match regex run against real manager output.
-#   B. scan a fixture tree (/root/fix)  -> real git (flat + nested), a symlink,
-#      a temp file, an orphan, an ignored node_modules.
+#   B. scan a fixture tree (/root/fix)  -> real git (flat + nested), a live
+#      symlink, a DANGLING symlink, two files the retired filename heuristic used
+#      to judge, and an ignored node_modules.
 #
-# Hard assertions fail the run; the git-nested provenance check is reported as a
-# SOFT signal (it is open issue #19 — the scanner currently orphans nested git
-# files), so the harness ratchets without pretending a known bug is fixed.
+# Every assertion here is a hard one. The three-verdict model (D19) retired the
+# name heuristic, so a file called `work~` is a HOLE and nothing else — there is no
+# longer any automatic answer that makes a file cleanable, which is the point.
+# The dangling symlink is the one case chive can prove is dead, and it is here so
+# the provable-dead path is exercised by the container layer and not only by the
+# host suite.
 set -u
 BROKEN=0
-soft() { printf '  ~ %s\n' "$1"; }   # known issue, does not fail the run
-
 fail() { printf '  FAIL: %s\n' "$1"; BROKEN=1; }
 ok() { printf '  ok: %s\n' "$1"; }
 
@@ -67,6 +69,9 @@ ln -s "$(command -v jq)" /root/fix/pkglink
 printf 'o\n' > /root/fix/work~
 printf 'o\n' > /root/fix/conf.md
 printf 'o\n' > /root/fix/node_modules/x.js
+# A link whose target is gone: provably dead, so `disposable` — the only
+# automatic cleanable verdict (D19, narrowed to dangling symlinks).
+ln -s /root/fix/collected-away /root/fix/dangling
 
 mkdir -p /state/b
 export CHIVE_CONFIG_DIR=/state/b
@@ -80,22 +85,29 @@ case "$(method_of_basename pkglink)" in
     *)          fail "symlink recipe: got [$(method_of_basename pkglink)]" ;;
 esac
 
-[ "$(status_of_basename work~)" = "temporary" ] && ok "editor temp file is temporary" \
-    || fail "work~ not temporary: got [$(status_of_basename work~)]"
-[ "$(status_of_basename conf.md)" = "orphaned" ] && ok "plain file is orphaned" \
-    || fail "conf.md not orphaned: got [$(status_of_basename conf.md)]"
+# D19: a filename is not evidence. Both of these used to be auto-judged; now they
+# are holes, and chive cannot delete either without being told to.
+[ "$(status_of_basename work~)" = "unknown" ] \
+    && ok "a name the old heuristic judged is a hole, not cleanable" \
+    || fail "work~ should be unknown: got [$(status_of_basename work~)]"
+[ "$(status_of_basename conf.md)" = "unknown" ] \
+    && ok "an unexplained file is a hole" \
+    || fail "conf.md should be unknown: got [$(status_of_basename conf.md)]"
+
+# The one automatic disposable: a link whose target does not resolve.
+[ "$(status_of_basename dangling)" = "disposable" ] \
+    && ok "a dangling symlink is provably dead, so disposable" \
+    || fail "dangling link should be disposable: got [$(status_of_basename dangling)]"
 
 git_status="$(status_of_basename repo/tracked.md)"
 [ "$git_status" = "restorable" ] && ok "git-tracked (repo root) file is restorable" \
     || fail "repo/tracked.md not restorable: got [$git_status]"
 
-# OPEN BUG #19: nested git files are wrongly orphaned. Report, don't fail.
+# Issue #19 was the last soft signal here and it is fixed, so this is hard: a
+# soft check that now always passes is a check that has stopped reporting.
 nested="$(status_of_basename repo/nested/deep.toml)"
-if [ "$nested" = "restorable" ]; then
-    ok "git-tracked NESTED file is restorable"
-else
-    soft "git-nested provenance is orphaned (got [$nested]) — open issue #19"
-fi
+[ "$nested" = "restorable" ] && ok "git-tracked NESTED file is restorable" \
+    || fail "repo/nested/deep.toml not restorable: got [$nested]"
 
 case "$(chive status 2>/dev/null)" in
     *"node_modules"*) fail "node_modules leaked into the catalog (should be ignored)" ;;

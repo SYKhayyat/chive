@@ -2,8 +2,14 @@
 name = "chive"
 version = "0.1.0"
 edition = "2024"
-description = "Reconstruction engine: scan a machine, keep a recipe for every meaningful file, re-derive what is missing."
+description = "The home.nix you never wrote: an imperative NixOS, read back off a machine that already exists."
 license = "MIT"
+# Pinned so the musl-static build (D21, and therefore the whole container
+# harness) is reproducible: without it, "run build-static.sh" means whatever the
+# machine's default toolchain happens to be, which is not a version. 1.87 is what
+# the code already requires — pinning lower immediately trips clippy's
+# `incompatible_msrv` lint, which is the point of pinning it at all.
+rust-version = "1.87"
 autotests = false
 default-run = "chive"
 

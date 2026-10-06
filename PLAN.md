@@ -85,8 +85,8 @@ Ruled as **D17**; rationale in `docs/spec/why.md`.
 - [x] #27 --all parity — FIXED: `restore --all` (and `plan restore --all`) is the documented explicit spelling of the default; conflicts with explicit paths (exit 2). Pinned by CLI tests. Remaining open: #23 dead-code sweep, #15/#16 defaults drift, #9 matrix, and the Phase-3 decision line.
 
 ## Phase 4 — Quality (docs + UX)
-- [ ] #52 the container harness asserts deleted verdict spellings, so **every distro FAILs** and its README results table is two commits stale. First thing to fix here: the `#[ignore]` ratchet in `tests/` *was* updated correctly, which proves the discipline works when wired to a machine and that a shell script with a status string in it is not.
-- [ ] #53 the musl-static constraint is load-bearing (D21 rests on it) and has **no reproducible build path** — the README's `nix-build /tmp/build-static.nix` cites a file that was never committed, and the alternative is a dynamic build. Also `run.sh` breaks without `rg` (silently exits 0) and `cp`s into a gitignored dir with no `mkdir -p`.
+- [x] #52 the container harness asserted deleted verdict spellings, so every distro FAILed — **FIXED.** `work~` and `conf.md` now assert `unknown` (D19 retired the name heuristic), a dangling-symlink fixture asserts `disposable` so the container layer exercises provable-dead, and the nested-git check is hard because #19 is fixed. `soft()` had no callers left and is deleted. Verified all seven assertions against the real binary with the script's own awk helpers. The README results table is replaced with what the layer has caught plus its known limits, because a hand-kept table rotted once already.
+- [x] #53 the musl-static constraint had no reproducible build path — **FIXED.** `docker/integration/build-static.sh` is committed, builds the musl target, and *asserts* the result is static rather than trusting the build. `rust-version` pinned at 1.87, which clippy's incompatible_msrv immediately enforced. `run.sh`'s recovery instruction pointed at a dynamic build into a gitignored dir. `harness/run.sh` now checks for `rg` and reports an `--ignored` PASS as "drop the #[ignore]" instead of the opposite.
 - [ ] #61 spec CLI output blocks are unchecked by anything and have already drifted six ways, including `clean --dry-run` documented as prompting for confirmation. Convert to golden-output assertions.
 - [ ] #59 `Evidence`/`Decision` split — four constructors are one entry shape with four flags, and the hardcoded origin in `new_unknown` is where #54 leaks. **Do before #41, not during**: `Origin` names *who* but not *which decision*, so a folder verdict inherited by a child cannot say so — exactly the lie #41 forbids flat rendering from telling.
 - [ ] #57 `CHIVE_DRY_RUN` leaks into the test suite (verified: 3 failures), and `HOSTNAME` into every catalog. `Real::dry_run` fakes *results* rather than skipping actions, so a dry-run scan's verdicts differ from a real scan's — and app.rs's unit tests assert those from a fiction.
@@ -113,8 +113,7 @@ its own claims that died under verification.
 **Read it before starting any Phase 1–4 item filed after 2026-10-06** — several
 of those findings change what the fix should be, not just how hard it is.
 
-**Still open from that audit:** #52 (the container harness is permanently red —
-every distro FAILs), #56 (apply-the-log has two owners and has diverged; this is
+**Still open from that audit:** #56 (apply-the-log has two owners and has diverged; this is
 what makes #41 cheap), #59 (Evidence/Decision split — do before #41), #60 (the
 suite asserts on stdout; D21 rules and D22's retracting half have no end-to-end
 coverage), #61 (spec output blocks unchecked, six drifts), #62 (SUMMARY.md stale),

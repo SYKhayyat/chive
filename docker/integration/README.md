@@ -18,7 +18,7 @@ Open issues are encoded as `#[ignore]`d regression tests in
 native package manager. Each installs a real package (warming the ownership DB),
 copies in a statically-linked `chive`, and scans a real `/usr/bin` + a fixture
 tree. This is where the adapters face a **real** `dpkg -S`, `pacman -Qo`,
-`rpm -qf`, `apk info -W`, `xbps-query -f`. No mocks.
+`rpm -qf`, `apk info -W`, `xbps-query -o`. No mocks.
 
 ```
 ./docker/integration/run.sh                 # ubuntu arch fedora alpine [void]
@@ -27,25 +27,36 @@ BUILD_ONLY=1 ./docker/integration/run.sh
 ```
 
 The container binary must be **statically linked** (a Nix/glibc binary dies in a
-foreign image because its interpreter lives under `/nix/store`). Build it with
-`nix-build --arg pkgs import /tmp/build-static.nix`-style derivation (see
-`run.sh`) or any musl static build, and place it at
-`docker/integration/context/chive`.
+foreign image because its interpreter lives under `/nix/store`). Build it with the
+committed script and place it at `docker/integration/context/chive`:
 
-### What it has found (open issues)
+```bash
+./docker/integration/build-static.sh
+```
 
-| | manager | distro | result | issue |
-|---|---|---|---|---|
-| `dpkg` | dpkg | ubuntu | **PASS** | — |
-| `pacman` | pacman | arch | **PASS** | — |
-| `rpm` | rpm/dnf | fedora | recipe `reinstall <pkg>-<ver>` (name_match grabs version) | #24 |
-| `apk` | apk | alpine | recipe `add --upgrade <path>` (name_match grabs path) | #24 |
-| `xbps` | xbps | void | xbps image install blocked by rootless TLS on this box; regex provably broken via fake | #24 |
-| `dnf` | dnf | fedora | **unreachable** — `rpm` is checked first and always matches | #24 |
+A dynamically-linked `cargo build --release` will not work here, and that is not a
+close call: the image has no `/nix/store` to find the interpreter in.
 
-`void`'s image build is blocked on this box by the rootless Docker network
-rewriting TLS (`SSL certificate subject does not match ... repo.voidlinux.org`);
-the xbps adapter bug is independently shown by the host fake.
+### What it has found
 
-The git-nested provenance failure (#19) is confirmed by **every** distro run
-(reported as a soft signal, not a hard fail, until #19 is fixed).
+**This table is not maintained.** It rotted once already — it described the
+pre-#24 adapter state for two days after #24 landed, because a hand-kept results
+table for a test suite is a snapshot nobody re-runs. The run output is the record;
+this file explains how to produce it.
+
+What the container layer has caught that the host suite could not:
+
+- **Real manager output.** The `apk` and `xbps` bugs of #24 were *confirmed* here
+  after the host fakes proposed them: `apk info -W` is path-first, and `xbps-query
+  -f` lists a package's files instead of answering ownership. Both are why the
+  adapter table asks each manager for the exact bare name it can.
+- **The static-link requirement itself.** Only a container notices that the binary
+  links against a `/nix/store` interpreter.
+
+Current known limits:
+
+- `void`'s image build is blocked on this box by the rootless Docker network
+  rewriting TLS (`SSL certificate subject does not match ... repo.voidlinux.org`).
+  The xbps adapter is covered by the host fakes instead.
+- `dnf` is unreachable in the container layer: `rpm` is checked first and always
+  matches on Fedora. Its recipe is covered by a host fake.
