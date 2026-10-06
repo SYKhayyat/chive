@@ -1,22 +1,26 @@
 use serde::Serialize;
 
-use super::{Category, Source, Status};
+use super::{Category, Origin, Source, Verdict};
 
-/// One catalog entry: every field the catalog records about a single file.
+/// One catalog entry: every field the catalog records about a single path.
 ///
 /// The `path` is relative to the scan root (the primary key). `category`,
 /// `source`, and `restore_method` are `Option` because the schema stores them
-/// as nullable: neither an orphan nor a temporary file has a recipe or a
-/// category. Serialization matches the schema in `docs/spec/target-state.md`.
+/// as nullable: an `unknown` entry has no recipe. Serialization matches the
+/// schema in `docs/spec/target-state.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileEntry {
     pub path: String,
-    pub status: Status,
+    pub verdict: Verdict,
     pub category: Option<Category>,
     pub restore_method: Option<String>,
     pub source: Option<Source>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub not_restorable_reason: Option<String>,
+    /// Who decided `verdict`. Drives stickiness on the next scan (D22).
+    pub verdict_source: Origin,
+    /// Whether the path exists on the machine that wrote this catalog. `false`
+    /// means a recipe was taught for a file that is not here, which is
+    /// legitimate when planning a new machine (issue #45).
+    pub present: bool,
     pub size: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modified: Option<String>,
@@ -28,22 +32,44 @@ impl FileEntry {
         category: Option<Category>,
         restore_method: String,
         source: Source,
+        verdict_source: Origin,
         size: i64,
         modified: Option<String>,
     ) -> Self {
         FileEntry {
             path,
-            status: Status::Restorable,
+            verdict: Verdict::Restorable,
             category,
             restore_method: Some(restore_method),
             source: Some(source),
-            not_restorable_reason: None,
+            verdict_source,
+            present: true,
             size,
             modified,
         }
     }
 
-    pub fn new_orphaned(
+    /// An entry for a recipe that exists but whose file does not. Keeps a taught
+    /// recipe reachable on a machine where the file has not been created yet.
+    pub fn new_absent_restorable(
+        path: String,
+        category: Option<Category>,
+        restore_method: String,
+    ) -> Self {
+        FileEntry {
+            path,
+            verdict: Verdict::Restorable,
+            category,
+            restore_method: Some(restore_method),
+            source: Some(Source::UserSupplied),
+            verdict_source: Origin::Owner,
+            present: false,
+            size: 0,
+            modified: None,
+        }
+    }
+
+    pub fn new_unknown(
         path: String,
         category: Option<Category>,
         size: i64,
@@ -51,18 +77,39 @@ impl FileEntry {
     ) -> Self {
         FileEntry {
             path,
-            status: Status::Orphaned,
+            verdict: Verdict::Unknown,
             category,
             restore_method: None,
             source: None,
-            not_restorable_reason: None,
+            verdict_source: Origin::Chive,
+            present: true,
+            size,
+            modified,
+        }
+    }
+
+    pub fn new_disposable(
+        path: String,
+        category: Option<Category>,
+        verdict_source: Origin,
+        size: i64,
+        modified: Option<String>,
+    ) -> Self {
+        FileEntry {
+            path,
+            verdict: Verdict::Disposable,
+            category,
+            restore_method: None,
+            source: None,
+            verdict_source,
+            present: true,
             size,
             modified,
         }
     }
 
     pub fn is_restorable(&self) -> bool {
-        self.status == Status::Restorable
+        self.verdict == Verdict::Restorable
     }
 }
 
@@ -77,6 +124,7 @@ mod entry_tests {
             Some(Category::Config),
             "cp ~/dotfiles/init.el '{dest}'".into(),
             Source::Verified,
+            Origin::Chive,
             100,
             Some("2026-01-01T00:00:00Z".into()),
         );
@@ -86,26 +134,36 @@ mod entry_tests {
             Some("cp ~/dotfiles/init.el '{dest}'")
         );
         assert_eq!(e.source, Some(Source::Verified));
-        assert_eq!(e.not_restorable_reason, None);
+        assert!(e.present);
     }
 
     #[test]
-    fn orphaned_entry_has_no_recipe() {
-        let e = FileEntry::new_orphaned("tmp/thing".into(), None, 5, None);
+    fn unknown_entry_has_no_recipe_and_is_never_cleanable() {
+        let e = FileEntry::new_unknown("tmp/thing".into(), None, 5, None);
         assert!(!e.is_restorable());
         assert_eq!(e.restore_method, None);
         assert_eq!(e.source, None);
         assert_eq!(e.category, None);
+        assert!(!e.verdict.is_cleanable());
     }
 
     #[test]
-    fn not_restorable_reason_is_preserved_and_optional() {
-        let mut e =
-            FileEntry::new_orphaned("Pictures/photo.nef".into(), Some(Category::Image), 10, None);
-        e.not_restorable_reason = Some("teach me a recipe".into());
-        assert_eq!(
-            e.not_restorable_reason.as_deref(),
-            Some("teach me a recipe")
-        );
+    fn an_absent_recipe_is_still_restorable() {
+        // Issue #45: a recipe taught for a path not on this machine must reach
+        // the archive, so the entry carries the recipe and records its absence.
+        let e = FileEntry::new_absent_restorable("future/file".into(), None, "echo hi".into());
+        assert!(e.is_restorable());
+        assert!(!e.present);
+        assert_eq!(e.restore_method.as_deref(), Some("echo hi"));
+        assert_eq!(e.verdict_source, Origin::Owner);
+    }
+
+    #[test]
+    fn owner_and_chive_disposals_differ_only_in_origin() {
+        let mine = FileEntry::new_disposable("a".into(), None, Origin::Chive, 1, None);
+        let theirs = FileEntry::new_disposable("b".into(), None, Origin::Owner, 1, None);
+        assert!(mine.verdict.is_cleanable() && theirs.verdict.is_cleanable());
+        assert!(!mine.verdict_source.is_sticky());
+        assert!(theirs.verdict_source.is_sticky());
     }
 }

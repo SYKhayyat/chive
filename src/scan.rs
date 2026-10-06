@@ -1,16 +1,20 @@
 //! The scanner: walk the tree and decide what every file is.
 //!
-//! This is where statuses are assigned. The decision per file is mechanical and
-//! deterministic (see `docs/spec/target-state.md`). One order governs the
-//! whole scan, and it matters:
+//! This is where verdicts are assigned, and the order is the whole contract
+//! (`docs/spec/target-state.md`):
 //!
 //! 1. **ignored dir** — not cataloged at all.
-//! 2. **taught recipe** — the owner explicitly wrote one, so it wins over every
-//!    automatic answer, including an inferred recipe and even a temporary
-//!    bloom. This is how `teach` overrules inference.
-//! 3. **temporary heuristic** — transient suffix/extension → `temporary`.
+//! 2. **owner act** — the newest act for this path governs. Teach makes it
+//!    `restorable`, dispose makes it `disposable`, withdraw releases it to
+//!    re-derive. A rescan *reads* this and re-applies it, so it can never
+//!    erase or reorder a decision (D20, issue #43).
+//! 3. **owner rule** — the owner's own policy, if a `[[rules]]` script has an
+//!    opinion.
 //! 4. **provenance chain** — package → git → symlink → `restorable` (verified).
-//! 5. otherwise **orphaned**.
+//! 5. **provable-dead** — a symlink whose target no longer resolves, or a
+//!    removed package's residue → `disposable`. The only automatic source of a
+//!    cleanable verdict (D19).
+//! 6. otherwise **`unknown`** — a hole. Never cleanable.
 //!
 //! Provenance runs lazily per file (each likely candidate is probed once and
 //! both package and git are only reached when the earlier sources miss), so a
@@ -20,14 +24,16 @@ use std::path::Path;
 
 use walkdir::{DirEntry, WalkDir};
 
+use crate::act::{ActKind, ActLog};
 use crate::config::Config;
 use crate::error::Result;
-use crate::model::{Category, FileEntry, Source, Status};
+use crate::model::{Category, FileEntry, Origin, Source, Verdict};
+use crate::provenance::dead;
 use crate::provenance::git::GitDetector;
 use crate::provenance::package::PackageDetector;
 use crate::provenance::symlink::SymlinkDetector;
 use crate::provenance::{Detector, Recipe};
-use crate::recipes::Recipes;
+use crate::rules::{self, Rules};
 use crate::runner::Runner;
 
 /// The provenance chain, resolved once per scan and reused for every file.
@@ -65,21 +71,36 @@ impl<'a> Provenance<'a> {
     /// per-file cost only pays for the deeper sources when the file actually
     /// is a link — the doc-comment speed argument lives in the probe cost,
     /// not the precedence.
+    ///
+    /// A symlink whose target does not resolve is not claimed *by the symlink
+    /// source*: `ln -s` would recreate the same broken link, so it falls
+    /// through to provable-dead and becomes `disposable`. That check belongs to
+    /// [`SymlinkDetector`], not here — a package may legitimately own a link
+    /// whose target is elsewhere, and reinstalling the package restores it.
     fn detect(&self, abs: &Path) -> Option<Recipe> {
         self.package
             .detect(self.runner, &self.available_managers, abs)
             .or_else(|| self.git.detect(abs))
             .or_else(|| self.symlink.detect(abs))
     }
+
+    /// The package that claims this file, if any. Exposed to rules as the
+    /// `package` fact: a rule can act on ownership, which the retired filename
+    /// heuristic could not.
+    fn owning_package(&self, abs: &Path) -> Option<String> {
+        self.package
+            .detect(self.runner, &self.available_managers, abs)
+            .and_then(|r| r.package)
+    }
 }
 
 /// Scans a root into a set of catalog entries.
 pub struct Scanner<'a> {
     provenance: Provenance<'a>,
-    recipes: &'a Recipes,
     config: &'a Config,
     /// Extra ignore patterns from the CLI, beyond the config file.
     extra_ignore: &'a [String],
+    rules: Rules,
 }
 
 impl<'a> Scanner<'a> {
@@ -87,21 +108,23 @@ impl<'a> Scanner<'a> {
         runner: &'a dyn Runner,
         package: &'a PackageDetector,
         scan_root: &'a Path,
-        recipes: &'a Recipes,
         config: &'a Config,
         extra_ignore: &'a [String],
+        rules: Rules,
     ) -> Self {
         Scanner {
             provenance: Provenance::new(runner, package, scan_root),
-            recipes,
             config,
             extra_ignore,
+            rules,
         }
     }
 
-    /// Walk `root` and produce one entry per file.
-    pub fn scan(&self, root: &Path) -> Result<Vec<FileEntry>> {
+    /// Walk `root` and produce one entry per path, with the owner act log
+    /// re-applied over the fresh evidence.
+    pub fn scan(&self, root: &Path, acts: &ActLog) -> Result<Vec<FileEntry>> {
         let root_abs = root.to_path_buf();
+        let governing = acts.governing();
         let mut out = Vec::new();
         let walker = WalkDir::new(&root_abs)
             .follow_links(false)
@@ -116,45 +139,109 @@ impl<'a> Scanner<'a> {
                 continue; // directories and special files are not cataloged
             }
             let rel = rel(root, entry.path());
-            if let Some(e) = self.entry_for(&root_abs, &rel) {
-                out.push(e);
-            }
+            out.push(self.entry_for(&root_abs, &rel, governing.get(rel.as_str()).copied())?);
         }
+
+        // A taught recipe for a path that is not on this machine is still worth
+        // recording — planning a new machine is the core workflow, and dropping
+        // it here is what made #45 lose recipes at export (issue #45).
+        for (path, act) in &governing {
+            if act.kind != ActKind::Teach {
+                continue;
+            }
+            if out.iter().any(|e| e.path == *path) {
+                continue;
+            }
+            let Some(method) = &act.method else { continue };
+            out.push(FileEntry::new_absent_restorable(
+                (*path).to_string(),
+                classify(path),
+                method.clone(),
+            ));
+        }
+        out.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(out)
     }
 
-    /// Decide what a single file becomes, given its relative path.
-    fn entry_for(&self, root: &Path, rel: &str) -> Option<FileEntry> {
-        let abs = root.join(rel);
-        let meta = std::fs::symlink_metadata(&abs).ok()?;
-        let size = meta.len() as i64;
-        let modified = meta.modified().ok().map(iso_timestamp).unwrap_or_default();
-        let name = rel.rsplit('/').next().unwrap_or(rel).to_string();
+    /// Re-examine one path and return the verdict chive can justify now, with
+    /// the owner act for that path re-applied.
+    ///
+    /// Used by `withdraw`: taking back a judgement means "you decide, chive
+    /// re-examines", and the evidence a previous `dispose` cleared has to be
+    /// regenerated rather than left stale until the next full scan.
+    pub fn rederive(
+        &self,
+        root: &Path,
+        rel: &str,
+        act: Option<&crate::act::Act>,
+    ) -> Result<FileEntry> {
+        self.entry_for(root, rel, act)
+    }
 
-        // 2. A taught recipe is the owner's explicit word; it overrules every
-        //    automatic classification for this path.
-        if let Some(method) = self.recipes.get(rel) {
-            return Some(FileEntry::new_restorable(
-                rel.to_string(),
-                classify(rel),
-                method.to_string(),
-                Source::UserSupplied,
-                size,
-                modified,
-            ));
+    /// Decide what a single file becomes, given its relative path and the owner
+    /// act that governs it (if any).
+    fn entry_for(
+        &self,
+        root: &Path,
+        rel: &str,
+        act: Option<&crate::act::Act>,
+    ) -> Result<FileEntry> {
+        let abs = root.join(rel);
+        let meta = std::fs::symlink_metadata(&abs).ok();
+        let size = meta.as_ref().map(|m| m.len() as i64).unwrap_or(0);
+        let modified = meta
+            .and_then(|m| m.modified().ok())
+            .map(iso_timestamp)
+            .unwrap_or_default();
+        let category = classify(rel);
+
+        // 2. The owner's newest act governs, and it beats every automatic answer
+        //    below. A rescan re-applies the log rather than replacing it.
+        match act.map(|a| a.kind) {
+            Some(ActKind::Teach) => {
+                let method = act.and_then(|a| a.method.clone()).unwrap_or_default();
+                return Ok(FileEntry::new_restorable(
+                    rel.to_string(),
+                    category,
+                    method,
+                    Source::UserSupplied,
+                    Origin::Owner,
+                    size,
+                    modified,
+                ));
+            }
+            Some(ActKind::Dispose) => {
+                return Ok(FileEntry::new_disposable(
+                    rel.to_string(),
+                    category,
+                    Origin::Owner,
+                    size,
+                    modified,
+                ));
+            }
+            // A withdraw releases the path: fall through and re-derive.
+            Some(ActKind::Withdraw) | None => {}
         }
 
-        // 3. Transient file.
-        if is_temporary(&name) {
-            return Some(FileEntry {
-                path: rel.to_string(),
-                status: Status::Temporary,
-                category: None,
-                restore_method: None,
-                source: None,
-                not_restorable_reason: None,
-                size,
-                modified,
+        let package = self.provenance.owning_package(&abs);
+
+        // 3. The owner's own policy, if a rule has an opinion about this path.
+        let facts = rules::facts_for(&abs, rel, size, package.as_deref());
+        if let Some((verdict, _label)) = self.rules.evaluate(&facts)? {
+            return Ok(match verdict {
+                Verdict::Disposable => FileEntry::new_disposable(
+                    rel.to_string(),
+                    category,
+                    Origin::Rule,
+                    size,
+                    modified,
+                ),
+                // A rule claiming restorable must supply a recipe to be useful,
+                // and chive has none; the honest reading of "I know how to
+                // rebuild this" without a recipe is a hole.
+                Verdict::Restorable | Verdict::Unknown => {
+                    FileEntry::new_unknown(rel.to_string(), category, size, modified)
+                }
             });
         }
 
@@ -162,23 +249,37 @@ impl<'a> Scanner<'a> {
         if let Some(Recipe {
             restore_method,
             source,
-            category,
+            category: found,
+            ..
         }) = self.provenance.detect(&abs)
         {
-            return Some(FileEntry::new_restorable(
+            return Ok(FileEntry::new_restorable(
                 rel.to_string(),
-                category.or_else(|| classify(rel)),
+                found.or(category),
                 restore_method,
                 source,
+                Origin::Chive,
                 size,
                 modified,
             ));
         }
 
-        // 5. Nothing explains it.
-        Some(FileEntry::new_orphaned(
+        // 5. Provably dead: the only automatic source of `disposable`.
+        if let Some((verdict, origin, _why)) = dead::detect(&abs) {
+            debug_assert_eq!(verdict, Verdict::Disposable);
+            return Ok(FileEntry::new_disposable(
+                rel.to_string(),
+                category,
+                origin,
+                size,
+                modified,
+            ));
+        }
+
+        // 6. Nothing explains it. It matters, and chive cannot rebuild it.
+        Ok(FileEntry::new_unknown(
             rel.to_string(),
-            classify(rel),
+            category,
             size,
             modified,
         ))
@@ -210,22 +311,6 @@ fn rel(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
-/// Whether a filename looks transient. Conservative: only unambiguous editor
-/// and cache artifacts, never `.bak`, `.log`, or source files.
-fn is_temporary(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with('~')
-        || (lower.starts_with('#') && lower.ends_with('#'))
-        || matches!(
-            extension(lower.as_str()),
-            Some("tmp") | Some("swp") | Some("swo") | Some("pyc") | Some("cache")
-        )
-}
-
-fn extension(name: &str) -> Option<&str> {
-    name.rsplit('.').next().filter(|e| !e.is_empty())
-}
-
 /// Classify a relative path into its category (extension-based).
 fn classify(path: &str) -> Option<Category> {
     crate::model::category::classify(path)
@@ -239,6 +324,8 @@ fn iso_timestamp(t: std::time::SystemTime) -> Option<String> {
 #[cfg(test)]
 mod scan_tests {
     use super::*;
+    use crate::act::{Act, ActLog};
+    use crate::rules::Rule;
     use crate::runner::Mock;
 
     fn build_dir() -> tempfile::TempDir {
@@ -249,11 +336,16 @@ mod scan_tests {
     }
 
     /// Owned pieces each test calls `Scanner::new` with.
-    fn parts() -> (Config, PackageDetector, Recipes) {
-        let cfg = Config::default();
-        let pkg =
-            PackageDetector::new(crate::provenance::config::Table::builtin().unwrap()).unwrap();
-        (cfg, pkg, Recipes::default())
+    fn parts() -> (Config, PackageDetector, Rules) {
+        (
+            Config::default(),
+            PackageDetector::new(crate::provenance::config::Table::builtin().unwrap()).unwrap(),
+            Rules::compile(&[]).unwrap(),
+        )
+    }
+
+    fn no_acts() -> ActLog {
+        ActLog::default()
     }
 
     #[test]
@@ -263,9 +355,9 @@ mod scan_tests {
         std::fs::write(dir.path().join("node_modules/junk.js"), "x").unwrap();
         std::fs::write(dir.path().join("real.txt"), "x").unwrap();
         let mock = Mock::default();
-        let (cfg, pkg, recipes) = parts();
-        let s = Scanner::new(&mock, &pkg, dir.path(), &recipes, &cfg, &[]);
-        let files = s.scan(dir.path()).unwrap();
+        let (cfg, pkg, rules) = parts();
+        let s = Scanner::new(&mock, &pkg, dir.path(), &cfg, &[], rules);
+        let files = s.scan(dir.path(), &no_acts()).unwrap();
         let paths: Vec<_> = files.iter().map(|e| e.path.as_str()).collect();
         assert!(paths.contains(&"real.txt"));
         assert!(
@@ -279,40 +371,76 @@ mod scan_tests {
     }
 
     #[test]
-    fn temp_named_file_is_temporary() {
-        let dir = build_dir();
-        std::fs::write(dir.path().join("wip~"), "").unwrap();
-        std::fs::write(dir.path().join("#auto#"), "").unwrap();
+    fn an_unexplained_file_is_a_hole_and_never_cleanable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("photo.nef"), "").unwrap();
         let mock = Mock::default();
-        let (cfg, pkg, recipes) = parts();
-        let s = Scanner::new(&mock, &pkg, dir.path(), &recipes, &cfg, &[]);
-        let files = s.scan(dir.path()).unwrap();
-        let temp: Vec<_> = files
-            .iter()
-            .filter(|e| e.status == Status::Temporary)
-            .collect();
-        assert_eq!(temp.len(), 2);
+        let (cfg, pkg, rules) = parts();
+        let s = Scanner::new(&mock, &pkg, dir.path(), &cfg, &[], rules);
+        let files = s.scan(dir.path(), &no_acts()).unwrap();
+        let e = files.iter().find(|e| e.path == "photo.nef").unwrap();
+        assert_eq!(e.verdict, Verdict::Unknown);
+        assert!(!e.verdict.is_cleanable());
+        assert_eq!(e.category, Some(Category::Image));
     }
 
     #[test]
-    fn taught_recipe_overrules_inference() {
+    fn the_retired_temporary_heuristic_no_longer_guesses() {
+        // D19: a name that used to mean "safe to clean" is now just a hole. The
+        // owner states that policy as a rule instead.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("wip~"), "").unwrap();
+        std::fs::write(dir.path().join("#auto#"), "").unwrap();
+        std::fs::write(dir.path().join("scratch.tmp"), "").unwrap();
+        let mock = Mock::default();
+        let (cfg, pkg, rules) = parts();
+        let s = Scanner::new(&mock, &pkg, dir.path(), &cfg, &[], rules);
+        let files = s.scan(dir.path(), &no_acts()).unwrap();
+        for e in &files {
+            assert_eq!(
+                e.verdict,
+                Verdict::Unknown,
+                "{} must not be guessed disposable",
+                e.path
+            );
+        }
+    }
+
+    #[test]
+    fn a_rule_replaces_the_heuristic_it_retired() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pkg.apk"), "").unwrap();
+        std::fs::write(dir.path().join("notes.md"), "").unwrap();
+        let rules = Rules::compile(&[Rule {
+            name: "apk".into(),
+            script: r#"if path.ends_with(".apk") { "disposable" } else { () }"#.into(),
+        }])
+        .unwrap();
+        let mock = Mock::default();
+        let (cfg, pkg, _) = parts();
+        let s = Scanner::new(&mock, &pkg, dir.path(), &cfg, &[], rules);
+        let files = s.scan(dir.path(), &no_acts()).unwrap();
+        let apk = files.iter().find(|e| e.path == "pkg.apk").unwrap();
+        assert_eq!(apk.verdict, Verdict::Disposable);
+        assert_eq!(apk.verdict_source, Origin::Rule);
+        let md = files.iter().find(|e| e.path == "notes.md").unwrap();
+        assert_eq!(md.verdict, Verdict::Unknown);
+    }
+
+    #[test]
+    fn an_owner_teach_overrules_inference_and_survives_the_scan() {
         let dir = build_dir();
         std::fs::write(dir.path().join("conf.txt"), "").unwrap();
-        let mut recipes = Recipes::default();
-        recipes
-            .teach(
-                "conf.txt",
-                "cp ~/seed/conf.txt '{dest}'",
-                &dir.path().join("recipes.toml"),
-            )
-            .unwrap();
+        let mut acts = ActLog::default();
+        acts.append(Act::teach(0, "conf.txt", "cp ~/seed/conf.txt '{dest}'"));
         let mock = Mock::default(); // no provenance programs
-        let (cfg, pkg2, _rec) = parts();
-        let s = Scanner::new(&mock, &pkg2, dir.path(), &recipes, &cfg, &[]);
-        let files = s.scan(dir.path()).unwrap();
+        let (cfg, pkg, rules) = parts();
+        let s = Scanner::new(&mock, &pkg, dir.path(), &cfg, &[], rules);
+        let files = s.scan(dir.path(), &acts).unwrap();
         let e = files.iter().find(|e| e.path == "conf.txt").unwrap();
-        assert_eq!(e.status, Status::Restorable);
+        assert_eq!(e.verdict, Verdict::Restorable);
         assert_eq!(e.source, Some(Source::UserSupplied));
+        assert_eq!(e.verdict_source, Origin::Owner);
         assert_eq!(
             e.restore_method.as_deref(),
             Some("cp ~/seed/conf.txt '{dest}'")
@@ -320,38 +448,119 @@ mod scan_tests {
     }
 
     #[test]
-    fn ordinary_unclassified_file_is_orphaned() {
-        // A plain tree with *no* .git so nothing is git-tracked.
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("photo.nef"), "").unwrap();
+    fn a_dispose_overrules_a_older_teach_for_the_same_path() {
+        // Issue #43's chain, in its pure form: the log is the only place order
+        // is recorded, and the newest act must win.
+        let dir = build_dir();
+        std::fs::write(dir.path().join("conf.txt"), "").unwrap();
+        let mut acts = ActLog::default();
+        acts.append(Act::teach(0, "conf.txt", "echo one"));
+        acts.append(Act::dispose(0, "conf.txt"));
         let mock = Mock::default();
-        let (cfg, pkg, recipes) = parts();
-        let s = Scanner::new(&mock, &pkg, dir.path(), &recipes, &cfg, &[]);
-        let files = s.scan(dir.path()).unwrap();
-        let e = files.iter().find(|e| e.path == "photo.nef").unwrap();
-        assert_eq!(e.status, Status::Orphaned);
-        assert_eq!(e.category, Some(Category::Image));
+        let (cfg, pkg, rules) = parts();
+        let s = Scanner::new(&mock, &pkg, dir.path(), &cfg, &[], rules);
+        let files = s.scan(dir.path(), &acts).unwrap();
+        let e = files.iter().find(|e| e.path == "conf.txt").unwrap();
+        assert_eq!(e.verdict, Verdict::Disposable);
+        assert_eq!(e.verdict_source, Origin::Owner);
+        assert_eq!(e.restore_method, None);
+    }
+
+    #[test]
+    fn a_withdraw_releases_the_path_to_re_derive() {
+        // A plain tree: build_dir() plants a .git, and then git provenance would
+        // (correctly) make the path restorable regardless of the withdrawal.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("conf.txt"), "").unwrap();
+        let mut acts = ActLog::default();
+        acts.append(Act::dispose(0, "conf.txt"));
+        acts.append(Act::withdraw(0, "conf.txt"));
+        let mock = Mock::default();
+        let (cfg, pkg, rules) = parts();
+        let s = Scanner::new(&mock, &pkg, dir.path(), &cfg, &[], rules);
+        let files = s.scan(dir.path(), &acts).unwrap();
+        let e = files.iter().find(|e| e.path == "conf.txt").unwrap();
+        assert_eq!(
+            e.verdict,
+            Verdict::Unknown,
+            "withdrawn: no owner verdict, and nothing here is restorable"
+        );
+        assert_eq!(e.verdict_source, Origin::Chive);
+    }
+
+    #[test]
+    fn a_taught_recipe_for_an_absent_path_is_still_recorded() {
+        // Issue #45: planning a new machine is the core workflow, so the entry
+        // must survive with present = false rather than being dropped.
+        let dir = build_dir();
+        std::fs::write(dir.path().join("here.txt"), "").unwrap();
+        let mut acts = ActLog::default();
+        acts.append(Act::teach(0, "not/here/yet.conf", "echo built"));
+        let mock = Mock::default();
+        let (cfg, pkg, rules) = parts();
+        let s = Scanner::new(&mock, &pkg, dir.path(), &cfg, &[], rules);
+        let files = s.scan(dir.path(), &acts).unwrap();
+        let e = files
+            .iter()
+            .find(|e| e.path == "not/here/yet.conf")
+            .expect("an absent taught path must be kept");
+        assert!(e.is_restorable());
+        assert!(!e.present);
+        assert_eq!(e.restore_method.as_deref(), Some("echo built"));
+    }
+
+    #[test]
+    fn a_disposed_absent_path_is_not_invented() {
+        let dir = build_dir();
+        let mut acts = ActLog::default();
+        acts.append(Act::dispose(0, "not/here.nef"));
+        let mock = Mock::default();
+        let (cfg, pkg, rules) = parts();
+        let s = Scanner::new(&mock, &pkg, dir.path(), &cfg, &[], rules);
+        let files = s.scan(dir.path(), &acts).unwrap();
+        assert!(
+            files.iter().all(|e| e.path != "not/here.nef"),
+            "there is nothing to clean, so there is nothing to record"
+        );
     }
 
     #[test]
     fn symlink_becomes_restorable_verified() {
         #[cfg(unix)]
         {
-            // A plain tree: no .git (git would outrank the link under the
-            // documented order) and no package managers on the mock.
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("target.txt"), "x").unwrap();
             std::os::unix::fs::symlink(dir.path().join("target.txt"), dir.path().join("link.txt"))
                 .unwrap();
             let mock = Mock::default();
-            let (cfg, pkg2, recipes) = parts();
-            let s = Scanner::new(&mock, &pkg2, dir.path(), &recipes, &cfg, &[]);
-            let files = s.scan(dir.path()).unwrap();
+            let (cfg, pkg2, rules) = parts();
+            let s = Scanner::new(&mock, &pkg2, dir.path(), &cfg, &[], rules);
+            let files = s.scan(dir.path(), &no_acts()).unwrap();
             let e = files.iter().find(|e| e.path == "link.txt").unwrap();
-            assert_eq!(e.status, Status::Restorable);
+            assert_eq!(e.verdict, Verdict::Restorable);
             assert_eq!(e.source, Some(Source::Verified));
             assert!(e.restore_method.as_deref().unwrap().starts_with("ln -s"));
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_dangling_symlink_is_disposable_not_a_useless_restore_step() {
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(dir.path().join("collected"), dir.path().join("dead-link"))
+            .unwrap();
+        let mock = Mock::default();
+        let (cfg, pkg, rules) = parts();
+        let s = Scanner::new(&mock, &pkg, dir.path(), &cfg, &[], rules);
+        let files = s.scan(dir.path(), &no_acts()).unwrap();
+        let e = files.iter().find(|e| e.path == "dead-link").unwrap();
+        assert_eq!(e.verdict, Verdict::Disposable);
+        assert_eq!(e.verdict_source, Origin::Chive);
+        assert_eq!(
+            e.restore_method, None,
+            "`ln -s` would recreate the same broken link"
+        );
+        assert!(e.verdict.is_cleanable());
     }
 
     #[test]
@@ -372,11 +581,11 @@ mod scan_tests {
                     None
                 }
             });
-            let (cfg, pkg, recipes) = parts();
-            let s = Scanner::new(&mock, &pkg, dir.path(), &recipes, &cfg, &[]);
-            let files = s.scan(dir.path()).unwrap();
+            let (cfg, pkg, rules) = parts();
+            let s = Scanner::new(&mock, &pkg, dir.path(), &cfg, &[], rules);
+            let files = s.scan(dir.path(), &no_acts()).unwrap();
             let e = files.iter().find(|e| e.path == "link.txt").unwrap();
-            assert_eq!(e.status, Status::Restorable);
+            assert_eq!(e.verdict, Verdict::Restorable);
             assert!(
                 e.restore_method
                     .as_deref()
@@ -394,10 +603,10 @@ mod scan_tests {
         std::fs::create_dir(dir.path().join("vendor")).unwrap();
         std::fs::write(dir.path().join("vendor/lib.rs"), "").unwrap();
         let mock = Mock::default();
-        let (cfg, pkg, recipes) = parts();
+        let (cfg, pkg, rules) = parts();
         let ignore = ["vendor".to_string()];
-        let s = Scanner::new(&mock, &pkg, dir.path(), &recipes, &cfg, &ignore);
-        let files = s.scan(dir.path()).unwrap();
+        let s = Scanner::new(&mock, &pkg, dir.path(), &cfg, &ignore, rules);
+        let files = s.scan(dir.path(), &no_acts()).unwrap();
         assert!(!files.iter().any(|e| e.path.contains("vendor")));
     }
 }

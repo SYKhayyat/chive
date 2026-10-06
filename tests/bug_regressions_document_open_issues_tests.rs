@@ -23,8 +23,8 @@ fn bug_git_nested_files_are_restorable() {
 
     let nested = env.status_line("repo/nested/deep.toml");
     assert!(
-        nested.contains("restorable") && nested.contains("verified"),
-        "nested git file should be restorable(verified), got:\n{nested}"
+        nested.contains("restorable") && nested.contains("chive"),
+        "nested git file should be restorable, decided by chive, got:\n{nested}"
     );
 }
 
@@ -40,7 +40,8 @@ fn import_rejects_paths_outside_the_root() {
     let evil = env.root.join("evil.toml");
     let body = format!(
         "[meta]\nroot = \"{tree}\"\nscanned_at = \"t\"\nhost = \"h\"\n\
-         [[files]]\npath = \"../../outside.txt\"\nstatus = \"restorable\"\n\
+         [[files]]\npath = \"../../outside.txt\"\nverdict = \"restorable\"\n\
+         verdict_source = \"owner\"\n\
          restore_method = \"echo pwn > {{dest}}\"\nsource = \"verified\"\nsize = 1\n",
         tree = env.home.join("tree").display()
     );
@@ -137,7 +138,7 @@ fn bug_apk_adapter_extracts_the_package_name() {
     env.ok(&["scan", env.home.to_str().unwrap()]);
     let line = env.status_line("bin/jq");
     assert!(
-        line.contains("restorable") && line.contains("verified"),
+        line.contains("restorable") && line.contains("chive"),
         "apk-owned file should be restorable, got:\n{line}"
     );
     let (full, _) = env.run(&["status"]);
@@ -167,7 +168,7 @@ fn bug_xbps_adapter_extracts_the_package_name() {
     env.ok(&["scan", env.home.to_str().unwrap()]);
     let line = env.status_line("bin/htop");
     assert!(
-        line.contains("restorable") && line.contains("verified"),
+        line.contains("restorable") && line.contains("chive"),
         "xbps-owned file should be restorable, got:\n{line}"
     );
     let (full, _) = env.run(&["status"]);
@@ -270,8 +271,8 @@ fn bug_33_scan_excludes_its_own_store() {
         "chive must not catalog its own store:\n{status}"
     );
 
-    let (_, code) = run(&["clean", "--scope", "orphaned", "--force"]);
-    assert_eq!(code, 0, "cleaning the real orphans must succeed");
+    let (_, code) = run(&["clean", "--force"]);
+    assert_eq!(code, 0, "cleaning the disposable files must succeed");
     assert!(
         env.home.join(".config/chive/catalog.toml").exists(),
         "the store must survive clean"
@@ -306,7 +307,8 @@ fn bug_34_scan_root_is_canonicalized() {
     );
 
     // from a different cwd, clean must target the real file (or refuse)
-    let (_, code) = env.run(&["clean", "--scope", "orphaned", "--force"]);
+    env.ok(&["dispose", "proj/important.conf"]);
+    let (_, code) = env.run(&["clean", "--force"]);
     assert_eq!(code, 0, "clean must succeed against the canonical root");
     assert!(
         !proj.join("important.conf").exists(),
@@ -324,8 +326,8 @@ fn bug_35_migration_flow_restores_into_home() {
     std::fs::write(
         &exported,
         "[meta]\nroot = \"/home/alice-old-machine\"\nscanned_at = \"2026-01-01T00:00:00+00:00\"\nhost = \"old\"\n\
-             [[files]]\npath = \".gitconfig\"\nstatus = \"restorable\"\n\
-             restore_method = \"printf '[user]\\n' > '{{dest}}'\"\nsource = \"user-supplied\"\nsize = 8\n",
+             [[files]]\npath = \".gitconfig\"\nverdict = \"restorable\"\nverdict_source = \"owner\"\n\
+             restore_method = \"printf '[user]\\n' > '{{dest}}'\"\nsource = \"user_supplied\"\nsize = 8\n",
     )
     .unwrap();
 
@@ -366,18 +368,32 @@ fn bug_36_hostname_is_detected_without_env() {
     );
 }
 
-/// Issue #37 — teach and mark agree on unknown paths.
+/// Issue #37 (narrowed) — the owner verbs agree on which paths are refusable.
+///
+/// The absent-path half is gone: teaching for a file this machine does not have
+/// is legitimate (planning a new machine, issue #45), so `teach` accepting it is
+/// correct rather than drift. What both verbs must still agree on is refusing a
+/// malformed or root-escaping path.
 #[test]
-#[ignore = "issue #37 — teach silently succeeds where mark fails"]
-fn bug_37_teach_and_mark_agree_on_unknown_paths() {
+fn bug_37_owner_verbs_agree_on_refusable_paths() {
     let env = Env::new("bug37_teach");
     env.put(".bashrc", "b");
     env.ok(&["scan", env.home.to_str().unwrap()]);
 
-    let (_, teach_code) = env.run(&["teach", "no/such/file.txt", "--method", "echo x"]);
-    let (_, mark_code) = env.run(&["mark", "no/such/other.txt", "--status", "not-restorable"]);
-    assert_eq!(
-        teach_code, mark_code,
-        "sibling commands must agree on an unknown path; teach must not report success for a no-op"
-    );
+    // an absent path is fine, and both verbs say so by succeeding
+    env.ok(&["teach", "no/such/file.txt", "--method", "echo x > '{dest}'"]);
+    env.ok(&["dispose", "no/such/other.txt"]);
+
+    for evil in ["../escape.txt", "a/../../escape.txt", "/etc/passwd", "a//b"] {
+        let (_, teach_code) = env.run(&["teach", evil, "--method", "echo x"]);
+        let (_, dispose_code) = env.run(&["dispose", evil]);
+        assert_ne!(
+            teach_code, 0,
+            "teach must refuse {evil:?}: it escapes the scan root"
+        );
+        assert_ne!(
+            dispose_code, 0,
+            "dispose must refuse {evil:?} too — sibling verbs must not disagree"
+        );
+    }
 }

@@ -4,6 +4,7 @@ pub mod toml;
 use std::collections::BTreeMap;
 use std::path::Component;
 
+use crate::act::{self, Act, ActLog};
 use crate::error::{Error, Result};
 use crate::model::FileEntry;
 
@@ -56,11 +57,15 @@ pub fn validate_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// A catalog: metadata plus every recorded file.
+/// A catalog: metadata, every recorded path, and the owner act log.
 ///
 /// The present state of a machine, addressed by path relative to the scan root
 /// so the same catalog describes any machine whose home lives at a different
 /// absolute path.
+///
+/// The act log travels *inside* the catalog (D20). It is what makes an owner's
+/// decision durable — the scanner reads it rather than overwriting it — and
+/// what makes it portable, since the catalog is the file a new machine imports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Catalog {
     /// The absolute scan root on the machine that produced this catalog.
@@ -71,20 +76,28 @@ pub struct Catalog {
     pub host: String,
     /// Entries kept sorted by `path` and addressed via [`Catalog::by_path`].
     files: Vec<FileEntry>,
+    acts: ActLog,
 }
 
 impl Catalog {
     /// Every path is validated here, so a `Catalog` in memory never holds a
-    /// path that could address a file outside the scan root.
+    /// path that could address a file outside the scan root. The same rule
+    /// applies to the act log: a hand-edited catalog may name any path it likes,
+    /// and a `teach` act naming one would otherwise smuggle it into a recipe.
     pub fn new(
         root: String,
         scanned_at: String,
         host: String,
         files: Vec<FileEntry>,
+        acts: ActLog,
     ) -> Result<Self> {
         for e in &files {
             validate_path(&e.path)?;
         }
+        for a in acts.acts() {
+            validate_path(&a.path)?;
+        }
+        act::check_unique_seqs(acts.acts())?;
         let mut files = files;
         files.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(Catalog {
@@ -92,7 +105,23 @@ impl Catalog {
             scanned_at,
             host,
             files,
+            acts,
         })
+    }
+
+    /// The owner act log. Read by the scanner, appended to by the verbs.
+    pub fn acts(&self) -> &ActLog {
+        &self.acts
+    }
+
+    /// Record an owner act, stamping it with the next sequence number.
+    ///
+    /// Validates the path here for the same reason the constructor does: an act
+    /// is as much a path a `restore` or `clean` will act on as an entry is, and
+    /// a verb must not be able to write one the next load would refuse (#17).
+    pub fn record(&mut self, act: Act) -> Result<Act> {
+        validate_path(&act.path)?;
+        Ok(self.acts.append(act))
     }
 
     pub fn files(&self) -> &[FileEntry] {
@@ -127,21 +156,26 @@ impl Catalog {
 #[cfg(test)]
 mod catalog_tests {
     use super::*;
-    use crate::model::{Category, Source};
+    use crate::act::ActLog;
+    use crate::model::{Category, Origin, Source, Verdict};
 
     fn entry(path: &str) -> FileEntry {
-        FileEntry::new_orphaned(path.into(), Some(Category::Document), 1, None)
+        FileEntry::new_unknown(path.into(), Some(Category::Document), 1, None)
+    }
+
+    fn cat(root: &str, files: Vec<FileEntry>) -> Result<Catalog> {
+        Catalog::new(
+            root.into(),
+            "t".into(),
+            "h".into(),
+            files,
+            ActLog::default(),
+        )
     }
 
     #[test]
     fn by_path_finds_and_misses() {
-        let mut c = Catalog::new(
-            "/home/u".into(),
-            "t".into(),
-            "h".into(),
-            vec![entry("b"), entry("a")],
-        )
-        .unwrap();
+        let mut c = cat("/home/u", vec![entry("b"), entry("a")]).unwrap();
         c.upsert(entry("c")).unwrap();
         assert!(c.by_path("a").is_some());
         assert!(c.by_path("b").is_some());
@@ -151,34 +185,26 @@ mod catalog_tests {
 
     #[test]
     fn constructor_sorts_by_path() {
-        let c = Catalog::new(
-            "/r".into(),
-            "t".into(),
-            "h".into(),
-            vec![entry("zeta"), entry("alpha")],
-        )
-        .unwrap();
+        let c = cat("/r", vec![entry("zeta"), entry("alpha")]).unwrap();
         let paths: Vec<_> = c.files().iter().map(|e| e.path.as_str()).collect();
         assert_eq!(paths, vec!["alpha", "zeta"]);
     }
 
     #[test]
     fn reinserting_existing_path_updates_in_place() {
-        let mut c = Catalog::new("/r".into(), "t".into(), "h".into(), vec![entry("a")]).unwrap();
+        let mut c = cat("/r", vec![entry("a")]).unwrap();
         let upgraded = FileEntry::new_restorable(
             "a".into(),
             None,
             "git checkout -- A".into(),
             Source::Verified,
+            Origin::Chive,
             3,
             None,
         );
         c.upsert(upgraded).unwrap();
         assert_eq!(c.files().len(), 1);
-        assert_eq!(
-            c.by_path("a").unwrap().status,
-            crate::model::Status::Restorable
-        );
+        assert_eq!(c.by_path("a").unwrap().verdict, Verdict::Restorable);
     }
 
     #[test]
@@ -195,29 +221,21 @@ mod catalog_tests {
             "a/../b",
             "a//b",
         ] {
-            let err = Catalog::new("/r".into(), "t".into(), "h".into(), vec![entry(evil)]);
+            let err = cat("/r", vec![entry(evil)]);
             assert!(err.is_err(), "{evil:?} must be refused");
         }
     }
 
     #[test]
     fn escape_refusal_names_the_reason() {
-        let err = Catalog::new(
-            "/r".into(),
-            "t".into(),
-            "h".into(),
-            vec![entry("../outside.txt")],
-        )
-        .unwrap_err();
+        let err = cat("/r", vec![entry("../outside.txt")]).unwrap_err();
         assert!(err.to_string().contains("escapes the scan root"));
     }
 
     #[test]
     fn ordinary_nested_paths_are_accepted() {
-        Catalog::new(
-            "/r".into(),
-            "t".into(),
-            "h".into(),
+        cat(
+            "/r",
             vec![
                 entry("conf/emacs.d/init.el"),
                 entry("my docs/file name.txt"),
@@ -229,8 +247,45 @@ mod catalog_tests {
 
     #[test]
     fn upsert_validates_like_the_constructor() {
-        let mut c = Catalog::new("/r".into(), "t".into(), "h".into(), vec![]).unwrap();
+        let mut c = cat("/r", vec![]).unwrap();
         assert!(c.upsert(entry("../evil")).is_err());
         assert!(c.files().is_empty(), "a refused entry is never stored");
+    }
+
+    #[test]
+    fn an_escaping_act_path_is_refused_like_any_entry_path() {
+        // A hand-edited act log is as much untrusted input as an entry list: a
+        // `teach` naming `../escape` would smuggle the path into a recipe.
+        let acts = ActLog::new(vec![Act::dispose(0, "../escape")], 1);
+        assert!(Catalog::new("/r".into(), "t".into(), "h".into(), vec![], acts).is_err());
+    }
+
+    #[test]
+    fn the_act_log_travels_with_the_catalog() {
+        let acts = ActLog::new(vec![Act::dispose(0, "a")], 1);
+        let c = Catalog::new("/r".into(), "t".into(), "h".into(), vec![], acts).unwrap();
+        assert_eq!(
+            c.acts().latest("a").unwrap().kind,
+            crate::act::ActKind::Dispose
+        );
+    }
+
+    #[test]
+    fn record_appends_and_stamps_a_sequence_number() {
+        let mut c = cat("/r", vec![]).unwrap();
+        let recorded = c.record(Act::teach(0, "a", "echo a")).unwrap();
+        assert_eq!(recorded.seq, 0);
+        assert_eq!(c.acts().len(), 1);
+        assert_eq!(c.acts().next_seq(), 1);
+    }
+
+    #[test]
+    fn record_refuses_an_escaping_path() {
+        let mut c = cat("/r", vec![]).unwrap();
+        assert!(c.record(Act::teach(0, "../escape", "echo x")).is_err());
+        assert!(
+            c.acts().is_empty(),
+            "a refused act is never stored, exactly like a refused entry"
+        );
     }
 }

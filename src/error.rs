@@ -18,6 +18,9 @@ pub enum Error {
     #[error("catalog is invalid: {0}")]
     Catalog(String),
 
+    #[error("config is invalid: {0}")]
+    Config(String),
+
     #[error("no catalog found; run `chive scan` first, or `chive import` a catalog")]
     MissingCatalog,
 

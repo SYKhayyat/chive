@@ -68,6 +68,7 @@ impl PackageDetector {
                     restore_method: fill(&c.spec.restore, &pkg, ""),
                     source: Source::Verified,
                     category: category_for(&c.spec.name),
+                    package: Some(pkg),
                 });
             }
         }

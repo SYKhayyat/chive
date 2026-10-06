@@ -10,12 +10,12 @@ use std::path::{Path, PathBuf};
 
 // Declare every integration test file here.
 mod a_machine_migration_rebuilds_files_tests;
-mod a_real_home_dir_scan_assigns_statuses_tests;
+mod a_real_home_dir_scan_assigns_verdicts_tests;
 mod bug_regressions_document_open_issues_tests;
 mod cli_tests;
 mod harness;
-mod mark_and_teach_round_trip_across_reload_tests;
 mod mock_providers;
+mod owner_decisions_survive_a_rescan_tests;
 mod package_provenance_through_the_real_path_tests;
 mod provenance_order_is_package_then_git_then_symlink_tests;
 mod restore_git_and_symlink_end_to_end_tests;
@@ -23,11 +23,11 @@ mod restore_git_and_symlink_end_to_end_tests;
 /// The files that *are* wired in — the single source of truth for the suite.
 const DECLARED: &[&str] = &[
     "a_machine_migration_rebuilds_files_tests",
-    "a_real_home_dir_scan_assigns_statuses_tests",
+    "a_real_home_dir_scan_assigns_verdicts_tests",
     "bug_regressions_document_open_issues_tests",
     "cli_tests",
-    "mark_and_teach_round_trip_across_reload_tests",
     "mock_providers",
+    "owner_decisions_survive_a_rescan_tests",
     "package_provenance_through_the_real_path_tests",
     "provenance_order_is_package_then_git_then_symlink_tests",
     "restore_git_and_symlink_end_to_end_tests",

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::catalog::Catalog;
 use crate::error::Result;
-use crate::model::{FileEntry, Status};
+use crate::model::FileEntry;
 use crate::runner::Runner;
 
 /// Defense in depth behind [`crate::catalog::validate_path`]: prove that `p`,
@@ -166,35 +166,16 @@ fn describe_failure(command: &str, stderr: &str, code: Option<i32>) -> String {
     }
 }
 
-/// Which cleanable files to remove. Restorable and not-restorable are never
-/// removable (this is the safety guarantee).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CleanScope {
-    Temporary,
-    Orphaned,
-    Both,
-}
-
-impl CleanScope {
-    fn selects(self, status: Status) -> bool {
-        match self {
-            CleanScope::Both => status.is_cleanable(),
-            CleanScope::Temporary => status == Status::Temporary,
-            CleanScope::Orphaned => status == Status::Orphaned,
-        }
-    }
-}
-
 /// The paths clean would remove — a read-only preview, deletes nothing.
-pub fn clean_preview<'a>(
-    catalog: &'a Catalog,
-    root: &Path,
-    scope: CleanScope,
-) -> Vec<(&'a str, PathBuf)> {
+///
+/// Only `disposable`. Under D19 that is the sole cleanable verdict, so the set
+/// here is exactly the set someone named; there is no scope flag because there
+/// is no second cleanable class left to choose between.
+pub fn clean_preview<'a>(catalog: &'a Catalog, root: &Path) -> Vec<(&'a str, PathBuf)> {
     catalog
         .files()
         .iter()
-        .filter(|e| scope.selects(e.status))
+        .filter(|e| e.verdict.is_cleanable())
         .map(|e| (e.path.as_str(), root.join(&e.path)))
         .filter(|(_, abs)| contained(root, abs))
         .collect()
@@ -206,9 +187,8 @@ pub fn clean_execute(
     runner: &dyn Runner,
     catalog: &Catalog,
     root: &Path,
-    scope: CleanScope,
 ) -> Result<(Catalog, Vec<String>)> {
-    let rows = clean_preview(catalog, root, scope);
+    let rows = clean_preview(catalog, root);
     let mut removed: Vec<String> = Vec::new();
     for (rel, abs) in rows {
         if runner.remove_file(&abs) {
@@ -227,6 +207,7 @@ pub fn clean_execute(
         catalog.scanned_at.clone(),
         catalog.host.clone(),
         files,
+        catalog.acts().clone(),
     )?;
     Ok((next, removed))
 }
@@ -234,7 +215,8 @@ pub fn clean_execute(
 #[cfg(test)]
 mod action_tests {
     use super::*;
-    use crate::model::{Category, Source};
+    use crate::act::{Act, ActLog};
+    use crate::model::{Category, Origin, Source};
 
     fn restorable(path: &str, method: &str) -> FileEntry {
         FileEntry::new_restorable(
@@ -242,32 +224,40 @@ mod action_tests {
             Some(Category::Config),
             method.into(),
             Source::Verified,
+            Origin::Chive,
             1,
             None,
         )
     }
 
+    /// Two restorable, one hole, two disposable (one owner, one chive).
     fn sample() -> Catalog {
-        let mut files = vec![
+        let files = vec![
             restorable("a.txt", "cp ~/seed/a.txt '{dest}'"),
             restorable("b.txt", "cp ~/seed/b.txt '{dest}'"),
-            FileEntry::new_orphaned("junk.tmp".into(), None, 1, None),
+            FileEntry::new_unknown("hole.nef".into(), None, 1, None),
+            FileEntry::new_disposable("junk.tmp".into(), None, Origin::Owner, 1, None),
+            FileEntry::new_disposable("dead-link".into(), None, Origin::Chive, 1, None),
         ];
-        files.push(FileEntry {
-            path: "temp~".into(),
-            status: Status::Temporary,
-            category: None,
-            restore_method: None,
-            source: None,
-            not_restorable_reason: None,
-            size: 1,
-            modified: None,
-        });
-        Catalog::new("/root".into(), "t".into(), "h".into(), files).unwrap()
+        Catalog::new(
+            "/root".into(),
+            "t".into(),
+            "h".into(),
+            files,
+            ActLog::default(),
+        )
+        .unwrap()
     }
 
     fn c_at(root: &Path, files: Vec<FileEntry>) -> Catalog {
-        Catalog::new(root.to_string_lossy().into(), "t".into(), "h".into(), files).unwrap()
+        Catalog::new(
+            root.to_string_lossy().into(),
+            "t".into(),
+            "h".into(),
+            files,
+            ActLog::default(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -441,26 +431,43 @@ mod action_tests {
     }
 
     #[test]
-    fn clean_scope_filters_and_removes_through_runner() {
+    fn clean_removes_only_disposable_and_nothing_else() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        std::fs::write(root.join("junk.tmp"), "x").unwrap();
-        std::fs::write(root.join("temp~"), "x").unwrap();
+        for f in ["junk.tmp", "dead-link", "hole.nef", "a.txt"] {
+            std::fs::write(root.join(f), "x").unwrap();
+        }
         let c = sample();
-        let both = clean_preview(&c, root, CleanScope::Both);
-        assert_eq!(both.len(), 2);
-        let temp = clean_preview(&c, root, CleanScope::Temporary);
-        assert_eq!(temp.len(), 1);
-        assert_eq!(temp[0].0, "temp~");
+        let rows = clean_preview(&c, root);
+        let paths: Vec<_> = rows.iter().map(|(p, _)| *p).collect();
+        assert_eq!(paths, vec!["dead-link", "junk.tmp"]);
 
         let mock = crate::runner::Mock::default();
-        let (next, removed) = clean_execute(&mock, &c, root, CleanScope::Both).unwrap();
+        let (next, removed) = clean_execute(&mock, &c, root).unwrap();
         assert_eq!(removed.len(), 2);
         assert!(next.by_path("junk.tmp").is_none());
-        assert!(next.by_path("temp~").is_none());
+        assert!(next.by_path("dead-link").is_none());
         assert!(
             next.by_path("a.txt").is_some(),
             "restorable must survive clean"
         );
+        assert!(
+            next.by_path("hole.nef").is_some(),
+            "a hole must survive clean: chive not understanding a file is not consent to delete it"
+        );
+    }
+
+    #[test]
+    fn clean_preserves_the_act_log_so_a_disposal_can_be_reinstated() {
+        // D20: removing a file must not discard the log, or the owner's record
+        // of having disposed of it would vanish with it.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("junk.tmp"), "x").unwrap();
+        let mut c = sample();
+        c.record(Act::dispose(0, "junk.tmp")).unwrap();
+        let mock = crate::runner::Mock::default();
+        let (next, _) = clean_execute(&mock, &c, root).unwrap();
+        assert_eq!(next.acts().len(), c.acts().len());
     }
 }

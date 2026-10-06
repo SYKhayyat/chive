@@ -26,6 +26,7 @@ impl super::Detector for GitDetector<'_> {
         git_location(self.runner, abs_path).map(|loc| Recipe {
             restore_method: loc.recipe(self.scan_root),
             source: Source::Verified,
+            package: None,
             category: None, // git says nothing about *type*; the classifier decides
         })
     }

@@ -5,8 +5,8 @@
 //!
 //! ```text
 //! <config-dir>/
-//! ├── config.toml     # ignore list, scan defaults
-//! ├── recipes.toml    # user-taught recipes (extension file)
+//! ├── config.toml     # ignore list, verdict rules, scan defaults
+//! ├── catalog.toml    # the catalog: entries + the owner act log (versionable)
 //! └── catalog.db      # working index (derived, not committed)
 //! ```
 
@@ -47,10 +47,6 @@ impl Store {
         self.dir.join("config.toml")
     }
 
-    pub fn recipes_file(&self) -> PathBuf {
-        self.dir.join("recipes.toml")
-    }
-
     pub fn db_file(&self) -> PathBuf {
         self.dir.join("catalog.db")
     }
@@ -79,8 +75,6 @@ fn default_config_dir() -> PathBuf {
     Path::new(".").join(".chive")
 }
 
-/// Name of the recipes extension file (for error messages / docs).
-pub const RECIPES_FILE: &str = "recipes.toml";
 pub const CONFIG_FILE: &str = "config.toml";
 pub const DB_FILE: &str = "catalog.db";
 
@@ -99,7 +93,6 @@ mod store_tests {
     fn sub_paths_are_relative_to_dir() {
         let s = Store::at(PathBuf::from("/tmp/chive-s"));
         assert_eq!(s.db_file(), PathBuf::from("/tmp/chive-s/catalog.db"));
-        assert_eq!(s.recipes_file(), PathBuf::from("/tmp/chive-s/recipes.toml"));
         assert_eq!(
             s.default_catalog_file(),
             PathBuf::from("/tmp/chive-s/catalog.toml")

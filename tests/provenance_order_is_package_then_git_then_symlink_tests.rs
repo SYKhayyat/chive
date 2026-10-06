@@ -19,8 +19,8 @@ fn a_package_owned_symlink_gets_the_package_recipe_not_the_ln_recipe() {
 
     let line = env.status_line("bin/tool");
     assert!(
-        line.contains("restorable") && line.contains("verified"),
-        "package-owned link must be restorable(verified):\n{line}"
+        line.contains("restorable") && line.contains("chive"),
+        "package-owned link must be restorable:\n{line}"
     );
     let (full, _) = env.run(&["status"]);
     assert!(
@@ -65,8 +65,8 @@ fn a_git_tracked_symlink_gets_the_git_recipe_not_the_ln_recipe() {
 
     let line = env.status_line("dotfiles/live.conf");
     assert!(
-        line.contains("restorable") && line.contains("verified"),
-        "tracked link must be restorable(verified):\n{line}"
+        line.contains("restorable") && line.contains("chive"),
+        "tracked link must be restorable:\n{line}"
     );
     let (full, _) = env.run(&["status"]);
     assert!(

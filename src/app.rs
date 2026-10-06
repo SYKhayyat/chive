@@ -15,7 +15,6 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::provenance::config::Table as AdapterTable;
 use crate::provenance::package::PackageDetector;
-use crate::recipes::Recipes;
 use crate::runner::Real;
 use crate::scan::Scanner;
 use crate::store::Store;
@@ -76,24 +75,56 @@ impl App {
         db::replace(&mut conn, catalog)
     }
 
-    /// Run a scan and return the catalog it produced (not yet persisted).
-    pub fn scan(&self, root: &Path, extra_ignore: &[String]) -> Result<Catalog> {
+    /// Re-decide one path against the current evidence, and return the catalog
+    /// with that entry replaced. The owner act log is untouched — this refreshes
+    /// the *view*, not the record.
+    pub fn rederive(&self, catalog: &Catalog, rel: &str) -> Result<Catalog> {
         let config = Config::load(&self.store.config_file())?;
-        let recipes = Recipes::load(&self.store.recipes_file())?;
+        let root = Path::new(&catalog.root);
+        let no_extra: &[String] = &[];
         let scanner = Scanner::new(
             &self.runner,
             &self.package,
             root,
-            &recipes,
+            &config,
+            no_extra,
+            config.compile_rules()?,
+        );
+        let act = catalog.acts().latest(rel).cloned();
+        let entry = scanner.rederive(root, rel, act.as_ref())?;
+        let mut next = catalog.clone();
+        next.upsert(entry)?;
+        Ok(next)
+    }
+
+    /// Run a scan and return the catalog it produced (not yet persisted).
+    ///
+    /// The owner act log is read from the existing catalog and re-applied over
+    /// the fresh evidence, then carried onto the result. This is the whole of
+    /// #43's fix: the scanner is downstream of the owner's decisions, so a
+    /// routine rescan cannot erase one (D20). A scan against no existing catalog
+    /// simply starts with an empty log.
+    pub fn scan(&self, root: &Path, extra_ignore: &[String]) -> Result<Catalog> {
+        let config = Config::load(&self.store.config_file())?;
+        let acts = self
+            .load_catalog()
+            .map(|c| c.acts().clone())
+            .unwrap_or_default();
+        let scanner = Scanner::new(
+            &self.runner,
+            &self.package,
+            root,
             &config,
             extra_ignore,
+            config.compile_rules()?,
         );
-        let files = scanner.scan(root)?;
+        let files = scanner.scan(root, &acts)?;
         Catalog::new(
             root.to_string_lossy().into_owned(),
             now_iso(),
             hostname(),
             files,
+            acts,
         )
     }
 }
@@ -114,7 +145,8 @@ fn hostname() -> String {
 #[cfg(test)]
 mod app_tests {
     use super::*;
-    use crate::model::{Source, Status};
+    use crate::act::{Act, ActLog};
+    use crate::model::{Origin, Source, Verdict};
 
     fn store() -> Store {
         let dir = std::env::temp_dir().join(format!(
@@ -140,10 +172,18 @@ mod app_tests {
             None,
             "echo {dest}".into(),
             Source::Verified,
+            Origin::Chive,
             1,
             None,
         );
-        let c = Catalog::new("/root".into(), "t".into(), "h".into(), vec![entry]).unwrap();
+        let c = Catalog::new(
+            "/root".into(),
+            "t".into(),
+            "h".into(),
+            vec![entry],
+            ActLog::default(),
+        )
+        .unwrap();
         app.save_catalog(&c).unwrap();
         let back = app.load_catalog().unwrap();
         assert_eq!(back, c);
@@ -168,8 +208,32 @@ mod app_tests {
         assert_eq!(c.files().len(), 1);
         assert_eq!(c.files()[0].path, "notes.md");
         // No package manager is present in dry-run and there is no .git, so
-        // the file is orphaned.
-        assert_eq!(c.files()[0].status, Status::Orphaned);
+        // the file is a hole: it matters, and chive cannot rebuild it.
+        assert_eq!(c.files()[0].verdict, Verdict::Unknown);
+    }
+
+    #[test]
+    fn a_scan_re_applies_the_owner_act_log_it_read() {
+        // Issue #43's chain, end to end: dispose a path, then rescan. The
+        // verdict must survive, because the scanner reads the log rather than
+        // replacing it.
+        let app = App::new(store(), true).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("junk.nef"), "x").unwrap();
+
+        let first = app.scan(dir.path(), &[]).unwrap();
+        let mut first = first;
+        first.record(Act::dispose(0, "junk.nef")).unwrap();
+        app.save_catalog(&first).unwrap();
+
+        let second = app.scan(dir.path(), &[]).unwrap();
+        let e = second.by_path("junk.nef").expect("the path is still there");
+        assert_eq!(
+            e.verdict,
+            Verdict::Disposable,
+            "a rescan must not erase the owner's decision"
+        );
+        assert_eq!(e.verdict_source, Origin::Owner);
     }
 
     #[test]

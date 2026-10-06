@@ -6,16 +6,16 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
-use crate::action::{self, CleanScope};
+use crate::act::Act;
+use crate::action;
 use crate::app::App;
 use crate::catalog::Catalog;
-use crate::error::{Error, Result};
-use crate::model::{Source, Status};
-use crate::recipes::Recipes;
+use crate::error::Result;
+use crate::model::{FileEntry, Origin, Source, Verdict};
 use crate::store::Store;
 
-/// chive — a reconstruction engine. Keep a recipe for every meaningful file, and
-/// re-derive what is missing on a new or damaged machine.
+/// chive — the `home.nix` you never wrote. Keep a recipe for every meaningful
+/// file, and re-derive what is missing on a new or damaged machine.
 #[derive(Debug, Parser)]
 #[command(name = "chive", version, about)]
 pub struct Cli {
@@ -36,21 +36,28 @@ enum Command {
         /// Extra directory basenames to skip, beyond the config ignore list.
         #[arg(long)]
         ignore: Vec<String>,
+        /// Write the catalog TOML here as well as to the store, so the archive
+        /// is updated by the scan rather than by a separate manual export.
+        #[arg(long)]
+        to: Option<PathBuf>,
     },
-    /// List catalog entries, optionally filtered by status.
+    /// List catalog entries, optionally filtered by verdict.
     Status {
         /// Show only restorable entries.
-        #[arg(long, conflicts_with_all = ["not_restorable", "temporary_status", "orphaned"])]
+        #[arg(long, conflicts_with_all = ["unknown", "disposable"])]
         restorable: bool,
-        /// Show only not-restorable entries.
-        #[arg(long = "not-restorable", id = "not_restorable", conflicts_with_all = ["restorable", "temporary_status", "orphaned"])]
-        not_restorable: bool,
-        /// Show only temporary entries.
-        #[arg(long, id = "temporary_status", conflicts_with_all = ["restorable", "not_restorable", "orphaned"])]
-        temporary: bool,
-        /// Show only orphaned entries.
-        #[arg(long, conflicts_with_all = ["restorable", "not_restorable", "temporary_status"])]
-        orphaned: bool,
+        /// Show only holes (entries chive cannot rebuild).
+        #[arg(long, conflicts_with_all = ["restorable", "disposable"])]
+        unknown: bool,
+        /// Show only entries judged disposable.
+        #[arg(long, conflicts_with_all = ["restorable", "unknown"])]
+        disposable: bool,
+    },
+    /// List what chive cannot rebuild, largest first. The work list.
+    Holes {
+        /// Show at most this many rows.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
     },
     /// Show catalog statistics.
     Stats,
@@ -75,26 +82,26 @@ enum Command {
         #[arg(long)]
         exclude: Vec<String>,
     },
-    /// Teach a recipe for a file, making it restorable (overrules inference).
+    /// Teach a recipe for a file, making it restorable.
     Teach {
-        /// The relative path to teach.
+        /// The relative path to teach. May not exist on this machine yet.
         path: String,
         /// The shell recipe. `{dest}` expands at restore time.
         #[arg(long)]
         method: String,
     },
-    /// Mark a file's status (not-restorable, temporary, or orphaned).
-    Mark {
-        /// The relative path to mark.
+    /// Judge a file disposable: a known gap that `clean` may remove.
+    Dispose {
+        /// The relative path to judge disposable.
         path: String,
-        #[arg(long, value_enum)]
-        status: MarkStatus,
     },
-    /// Remove temporary and/or orphaned files from disk.
+    /// Take back your judgement, so the path re-derives from evidence.
+    Withdraw {
+        /// The relative path to withdraw.
+        path: String,
+    },
+    /// Remove disposable files from disk.
     Clean {
-        /// Which cleanable statuses to remove.
-        #[arg(long, value_enum, default_value_t = CleanArg::Both)]
-        scope: CleanArg,
         /// Preview what would be removed without removing anything.
         #[arg(long)]
         dry_run: bool,
@@ -143,32 +150,6 @@ enum PlanCmd {
     },
 }
 
-/// The target status for `mark`.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum MarkStatus {
-    NotRestorable,
-    Temporary,
-    Orphaned,
-}
-
-/// The clean scope flag (reuses `action::CleanScope` semantics).
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum CleanArg {
-    Temporary,
-    Orphaned,
-    Both,
-}
-
-impl From<CleanArg> for CleanScope {
-    fn from(v: CleanArg) -> Self {
-        match v {
-            CleanArg::Temporary => CleanScope::Temporary,
-            CleanArg::Orphaned => CleanScope::Orphaned,
-            CleanArg::Both => CleanScope::Both,
-        }
-    }
-}
-
 /// Parse the full `argv` (the first element is the program name, as clap
 /// expects) and run the chosen command. Returns the process exit code.
 pub fn run(argv: impl IntoIterator<Item = String>) -> Result<i32> {
@@ -198,26 +179,24 @@ pub fn run(argv: impl IntoIterator<Item = String>) -> Result<i32> {
     let app = App::new(store, dry_run)?;
 
     let code = match cli.command {
-        Command::Scan { path, ignore } => cmd_scan(&app, &path, &ignore)?,
+        Command::Scan { path, ignore, to } => cmd_scan(&app, &path, &ignore, to)?,
         Command::Status {
             restorable,
-            not_restorable,
-            temporary,
-            orphaned,
+            unknown,
+            disposable,
         } => cmd_status(
             &app,
             if restorable {
-                Some(Status::Restorable)
-            } else if not_restorable {
-                Some(Status::NotRestorable)
-            } else if temporary {
-                Some(Status::Temporary)
-            } else if orphaned {
-                Some(Status::Orphaned)
+                Some(Verdict::Restorable)
+            } else if unknown {
+                Some(Verdict::Unknown)
+            } else if disposable {
+                Some(Verdict::Disposable)
             } else {
                 None
             },
         )?,
+        Command::Holes { limit } => cmd_holes(&app, limit)?,
         Command::Stats => cmd_stats(&app)?,
         Command::Plan { sub } => match sub {
             PlanCmd::Restore {
@@ -234,31 +213,35 @@ pub fn run(argv: impl IntoIterator<Item = String>) -> Result<i32> {
             exclude,
         } => cmd_restore(&app, root, &paths, &exclude)?,
         Command::Teach { path, method } => cmd_teach(&app, &path, &method)?,
-        Command::Mark { path, status } => cmd_mark(&app, &path, status)?,
-        Command::Clean {
-            scope,
-            dry_run,
-            force,
-        } => cmd_clean(&app, scope.into(), dry_run, force)?,
+        Command::Dispose { path } => cmd_dispose(&app, &path)?,
+        Command::Withdraw { path } => cmd_withdraw(&app, &path)?,
+        Command::Clean { dry_run, force } => cmd_clean(&app, dry_run, force)?,
         Command::Import { from } => cmd_import(&app, from)?,
         Command::Export { to } => cmd_export(&app, to)?,
     };
     Ok(code)
 }
 
-fn cmd_scan(app: &App, root: &Path, ignore: &[String]) -> Result<i32> {
+fn cmd_scan(app: &App, root: &Path, ignore: &[String], to: Option<PathBuf>) -> Result<i32> {
     let catalog = app.scan(root, ignore)?;
     app.save_catalog(&catalog)?;
+    // Issue #44: the archive was only as current as the last manual `export`, so
+    // every verdict recorded since went unrecorded off-box. `--to` lets the scan
+    // write the versionable catalog directly.
+    if let Some(dest) = to {
+        crate::catalog::toml::write(&catalog, &dest)?;
+        println!("wrote catalog to {}", dest.display());
+    }
     print_scan_summary(&catalog);
     Ok(0)
 }
 
 fn print_scan_summary(c: &Catalog) {
-    fn count(c: &Catalog, f: impl Fn(&Status) -> bool) -> usize {
-        c.files().iter().filter(|e| f(&e.status)).count()
+    fn count(c: &Catalog, f: impl Fn(&Verdict) -> bool) -> usize {
+        c.files().iter().filter(|e| f(&e.verdict)).count()
     }
     let total = c.files().len();
-    let restorable = count(c, |s| *s == Status::Restorable);
+    let restorable = count(c, |v| *v == Verdict::Restorable);
     let verified = c
         .files()
         .iter()
@@ -269,35 +252,116 @@ fn print_scan_summary(c: &Catalog) {
         .iter()
         .filter(|e| e.source == Some(Source::UserSupplied))
         .count();
-    let not_restorable = count(c, |s| *s == Status::NotRestorable);
-    let temporary = count(c, |s| *s == Status::Temporary);
-    let orphaned = count(c, |s| *s == Status::Orphaned);
+    let unknown = count(c, |v| *v == Verdict::Unknown);
+    let disposable = count(c, |v| *v == Verdict::Disposable);
+    // Break the disposals down by who decided them. Naming only "provably dead"
+    // would misreport a rule- or owner-disposed file as something chive proved,
+    // which is the exact claim D19 exists to keep honest.
+    let disposed_by = |origin: Origin| {
+        c.files()
+            .iter()
+            .filter(|e| e.verdict == Verdict::Disposable && e.verdict_source == origin)
+            .count()
+    };
+    let by_owner = disposed_by(Origin::Owner);
+    let by_rule = disposed_by(Origin::Rule);
+    let by_chive = disposed_by(Origin::Chive);
     println!("Scanned {total} files:");
     println!("  {restorable:>8} restorable ({verified:>6} verified, {user:>6} user-supplied)");
-    println!("  {not_restorable:>8} not-restorable");
-    println!("  {temporary:>8} temporary");
-    println!("  {orphaned:>8} orphaned");
+    println!("  {unknown:>8} unknown (holes)");
+    println!(
+        "  {disposable:>8} disposable ({by_owner} owner, {by_rule} by rule, {by_chive} provably dead)"
+    );
 }
 
-fn cmd_status(app: &App, filter: Option<Status>) -> Result<i32> {
+/// Human-readable size, so the work list reads in the units the owner cares
+/// about rather than raw byte counts.
+fn human_bytes(n: i64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = n as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[u])
+    }
+}
+
+fn cmd_status(app: &App, filter: Option<Verdict>) -> Result<i32> {
     let catalog = app.load_catalog()?;
     for entry in catalog.files() {
-        let wanted = filter.is_none_or(|f| entry.status == f);
+        let wanted = filter.is_none_or(|f| entry.verdict == f);
         if !wanted {
             continue;
         }
         let method = entry.restore_method.as_deref().unwrap_or("-");
-        let source = entry.source.map(|s| s.as_str()).unwrap_or("-");
+        let origin = entry.verdict_source.as_str();
         let category = entry.category.map(|c| c.as_str()).unwrap_or("-");
+        let absent = if entry.present {
+            ""
+        } else {
+            "  (not on this machine)"
+        };
         println!(
-            "{:<15} {:<8} {:<8} {}",
-            entry.status, source, category, entry.path
+            "{:<11} {:<6} {:<8} {}{absent}",
+            entry.verdict, origin, category, entry.path
         );
         if filter.is_none() {
             println!("  method: {method}");
         }
     }
     Ok(0)
+}
+
+fn cmd_holes(app: &App, limit: usize) -> Result<i32> {
+    // D23: the loop the product exists to support -- see what has no recipe,
+    // teach it -- had no verb. Largest first, because the biggest hole is the
+    // one worth closing.
+    let catalog = app.load_catalog()?;
+    let mut holes: Vec<_> = catalog
+        .files()
+        .iter()
+        .filter(|e| e.verdict == Verdict::Unknown)
+        .collect();
+    holes.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.path.cmp(&b.path)));
+    let total: i64 = holes.iter().map(|e| e.size).sum();
+    println!(
+        "{} holes ({}) — nothing chive can rebuild yet",
+        thousands(holes.len()),
+        human_bytes(total)
+    );
+    println!();
+    for e in holes.iter().take(limit) {
+        println!(
+            "  {:>9}  {:<52} teach a recipe, or dispose",
+            human_bytes(e.size),
+            e.path
+        );
+    }
+    if holes.len() > limit {
+        println!(
+            "  ... and {} more (`chive holes --limit N`)",
+            thousands(holes.len() - limit)
+        );
+    }
+    Ok(0)
+}
+
+/// Thousands separators, so a five-figure hole count is readable at a glance.
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn cmd_stats(app: &App) -> Result<i32> {
@@ -314,20 +378,15 @@ fn cmd_stats(app: &App) -> Result<i32> {
         .iter()
         .filter(|e| e.source == Some(Source::UserSupplied))
         .count();
-    let not_restorable = c
+    let unknown = c
         .files()
         .iter()
-        .filter(|e| e.status == Status::NotRestorable)
+        .filter(|e| e.verdict == Verdict::Unknown)
         .count();
-    let temporary = c
+    let disposable = c
         .files()
         .iter()
-        .filter(|e| e.status == Status::Temporary)
-        .count();
-    let orphaned = c
-        .files()
-        .iter()
-        .filter(|e| e.status == Status::Orphaned)
+        .filter(|e| e.verdict == Verdict::Disposable)
         .count();
     let pct = |n: usize| {
         if total == 0 {
@@ -337,19 +396,20 @@ fn cmd_stats(app: &App) -> Result<i32> {
         }
     };
     println!("Catalog: {total} files");
+    // D18: the hole count leads, because it is the only number here the owner
+    // can act on. Percentages demote below it.
+    println!(
+        "  holes (unknown):{unknown:>7} ({:>5.1}%)  <- nothing chive can rebuild yet",
+        pct(unknown)
+    );
     println!(
         "  restorable:     {restorable:>7} ({:>5.1}%)",
         pct(restorable as usize)
     );
     println!(
-        "  not-restorable: {not_restorable:>7} ({:>5.1}%)",
-        pct(not_restorable)
+        "  disposable:     {disposable:>7} ({:>5.1}%)",
+        pct(disposable)
     );
-    println!(
-        "  temporary:      {temporary:>7} ({:>5.1}%)",
-        pct(temporary)
-    );
-    println!("  orphaned:       {orphaned:>7} ({:>5.1}%)", pct(orphaned));
     if restorable > 0 {
         let v = 100.0 * verified as f64 / restorable as f64;
         let u = 100.0 * user as f64 / restorable as f64;
@@ -402,75 +462,113 @@ fn cmd_restore(
     Ok(if failed { 1 } else { 0 })
 }
 
-fn cmd_teach(app: &App, path: &str, method: &str) -> Result<i32> {
-    // Teaching extends the recipes file, then we persist the catalog with the
-    // taught entry promoted to restorable (user_supplied), overruling inference.
-    let mut recipes = Recipes::load(&app.store.recipes_file())?;
-    recipes.teach(path, method, &app.store.recipes_file())?;
-
-    // Rebuild the catalog so this file is now restorable.
+/// Record an owner act, refresh the entry it governs, and save.
+///
+/// The act is the durable part; the entry is the derived view a scan would
+/// produce for that path. Recording the act first is what makes `teach` work on
+/// a path this machine does not have (issue #45): there is an entry to refresh,
+/// but the log entry is what a later scan and a new machine both read.
+fn record_act(
+    app: &App,
+    act: Act,
+    apply: impl FnOnce(&mut Catalog, &Act) -> Result<()>,
+) -> Result<Catalog> {
     let mut catalog = app.load_catalog()?;
-    match catalog.by_path(path).cloned() {
-        Some(mut entry) => {
-            entry.status = Status::Restorable;
-            entry.restore_method = Some(method.to_string());
-            entry.source = Some(Source::UserSupplied);
-            catalog.upsert(entry)?;
-        }
-        None => {
-            // A taught recipe for a file not present on this machine should not
-            // invent a file; recipes.toml alone holds it. Nothing to change.
-        }
-    }
+    let recorded = catalog.record(act)?;
+    apply(&mut catalog, &recorded)?;
     app.save_catalog(&catalog)?;
+    Ok(catalog)
+}
+
+fn cmd_teach(app: &App, path: &str, method: &str) -> Result<i32> {
+    // The act is the durable part; the entry is the view a scan would produce
+    // for that path, and it is refreshed here too — otherwise `teach` followed
+    // by `restore` would do nothing until the next scan, which is the gap the
+    // old sidecar-file model hid.
+    record_act(app, Act::teach(0, path, method), |c, act| {
+        match c.by_path(&act.path).cloned() {
+            Some(mut e) => {
+                e.verdict = Verdict::Restorable;
+                e.verdict_source = Origin::Owner;
+                e.restore_method = act.method.clone();
+                e.source = Some(Source::UserSupplied);
+                c.upsert(e)?;
+            }
+            // Teaching for a path this machine does not have is legitimate —
+            // planning a new machine is the core workflow — so the entry is
+            // created and marked absent rather than dropped (issue #45).
+            None => {
+                c.upsert(FileEntry::new_absent_restorable(
+                    act.path.clone(),
+                    crate::model::classify(&act.path),
+                    act.method.clone().unwrap_or_default(),
+                ))?;
+            }
+        }
+        Ok(())
+    })?;
     println!("taught: {path}");
     println!("  method: {method}");
     Ok(0)
 }
 
-fn cmd_mark(app: &App, path: &str, status: MarkStatus) -> Result<i32> {
-    let mut catalog = app.load_catalog()?;
-    let target = match status {
-        MarkStatus::NotRestorable => Status::NotRestorable,
-        MarkStatus::Temporary => Status::Temporary,
-        MarkStatus::Orphaned => Status::Orphaned,
-    };
-    let mut entry = catalog
-        .by_path(path)
-        .cloned()
-        .ok_or_else(|| Error::Catalog(format!("no such file in catalog: {path}")))?;
-    entry.status = target;
-    // A mark clears any previous restore recipe; the entry is no longer restorable.
-    entry.restore_method = None;
-    entry.source = None;
-    catalog.upsert(entry)?;
-    app.save_catalog(&catalog)?;
-    println!("marked: {path} → {target}");
+fn cmd_dispose(app: &App, path: &str) -> Result<i32> {
+    // The only verb that makes a path cleanable.
+    record_act(app, Act::dispose(0, path), |c, act| {
+        if let Some(entry) = c.by_path(&act.path) {
+            let mut e = entry.clone();
+            e.verdict = Verdict::Disposable;
+            e.verdict_source = Origin::Owner;
+            e.restore_method = None;
+            e.source = None;
+            c.upsert(e)?;
+        }
+        Ok(())
+    })?;
+    println!("disposed: {path}");
     Ok(0)
 }
 
-fn cmd_clean(app: &App, scope: CleanScope, dry_run: bool, force: bool) -> Result<i32> {
+fn cmd_withdraw(app: &App, path: &str) -> Result<i32> {
+    // Take back the judgement, then let chive re-examine the path: a recipe it
+    // can still prove stays, and one it cannot is a hole. This needs no rule of
+    // its own -- "recipe present => restorable, absent => unknown" -- but it does
+    // need the evidence, which `dispose` cleared when it took the verdict away.
+    // So the entry is re-derived here rather than left stale until the next scan.
+    let catalog = record_act(app, Act::withdraw(0, path), |c, act| {
+        if let Some(entry) = c.by_path(&act.path).cloned() {
+            c.upsert(entry)?;
+        }
+        Ok(())
+    })?;
+    let catalog = app.rederive(&catalog, path)?;
+    let after = catalog
+        .by_path(path)
+        .map(|e| e.verdict)
+        .unwrap_or(Verdict::Unknown);
+    app.save_catalog(&catalog)?;
+    println!("withdrew: {path} -> {after}");
+    Ok(0)
+}
+
+fn cmd_clean(app: &App, dry_run: bool, force: bool) -> Result<i32> {
     let mut catalog = app.load_catalog()?;
     let root = PathBuf::from(&catalog.root);
     if dry_run {
-        let rows = action::clean_preview(&catalog, &root, scope);
+        let rows = action::clean_preview(&catalog, &root);
         println!("Would remove {} file(s):", rows.len());
         for (rel, _) in rows {
             println!("  {rel}");
         }
         return Ok(0);
     }
-    let expected = action::clean_preview(&catalog, &root, scope).len();
+    let expected = action::clean_preview(&catalog, &root).len();
     if !force && !confirm(&format!("Remove {expected} file(s)? [y/N] ")) {
         println!("nothing removed");
         return Ok(0);
     }
-    let (next, removed) = action::clean_execute(
-        app.runner() as &dyn crate::runner::Runner,
-        &catalog,
-        &root,
-        scope,
-    )?;
+    let (next, removed) =
+        action::clean_execute(app.runner() as &dyn crate::runner::Runner, &catalog, &root)?;
     catalog = next;
     app.save_catalog(&catalog)?;
     println!("removed {} file(s)", removed.len());
@@ -494,9 +592,13 @@ fn cmd_import(app: &App, from: Option<PathBuf>) -> Result<i32> {
     let path = from.unwrap_or_else(|| app.store.default_catalog_file());
     let catalog = crate::catalog::toml::read(&path)?;
     app.save_catalog(&catalog)?;
+    // The act log arrives with the catalog: these are the owner's decisions from
+    // the machine the archive came from, and a verdict kept in config would have
+    // stayed behind with it (D20).
     println!(
-        "imported {} file(s) from {}",
+        "imported {} file(s) and {} owner act(s) from {}",
         catalog.files().len(),
+        catalog.acts().len(),
         path.display()
     );
     Ok(0)

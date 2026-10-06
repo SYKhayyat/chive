@@ -1,6 +1,6 @@
 //! Beyond detection: actually **re-derive** a git-tracked file and a symlink by
 //! running their recipes and checking the destination comes back. The earlier
-//! harness tests prove the *status* is `restorable(verified)`; these prove the
+//! harness tests prove the *status* is `restorable`; these prove the
 //! restore command works for the two non-package provenance kinds.
 
 use crate::harness::Env;
@@ -15,10 +15,10 @@ fn restore_recreates_a_deleted_git_tracked_file() {
     env.git_repo("repo", &["config.toml"]);
     env.ok(&["scan", home.to_str().unwrap()]);
 
-    // the git-tracked file is restorable(verified) with a checkout recipe
+    // the git-tracked file is restorable with a checkout recipe
     let line = env.status_line("repo/config.toml");
     assert!(
-        line.contains("restorable") && line.contains("verified"),
+        line.contains("restorable") && line.contains("chive"),
         "git-tracked file restorable:\n{line}"
     );
 

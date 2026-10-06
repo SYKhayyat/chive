@@ -9,11 +9,12 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
+use crate::act::{Act, ActKind, ActLog};
 use crate::catalog::Catalog;
 use crate::error::{Error, Result};
-use crate::model::{Category, FileEntry, Source, Status};
+use crate::model::{Category, FileEntry, Origin, Source, Verdict};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (
@@ -22,14 +23,22 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 
 CREATE TABLE IF NOT EXISTS files (
-    path                  TEXT PRIMARY KEY,
-    status                TEXT NOT NULL,
-    category              TEXT,
-    restore_method        TEXT,
-    source                TEXT,
-    not_restorable_reason TEXT,
-    size                  INTEGER,
-    modified              TEXT
+    path           TEXT PRIMARY KEY,
+    verdict        TEXT NOT NULL,
+    category       TEXT,
+    restore_method TEXT,
+    source         TEXT,
+    verdict_source TEXT NOT NULL,
+    present        INTEGER NOT NULL,
+    size           INTEGER,
+    modified       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS acts (
+    seq    INTEGER PRIMARY KEY,
+    path   TEXT NOT NULL,
+    kind   TEXT NOT NULL,
+    method TEXT
 );
 ";
 
@@ -74,7 +83,8 @@ pub fn open_for_write(path: &Path) -> Result<Connection> {
 /// mid-rebuild cannot leave a half-new index.
 pub fn replace(conn: &mut Connection, catalog: &Catalog) -> Result<()> {
     let tx = conn.transaction().map_err(db_err)?;
-    tx.execute_batch("DELETE FROM files;").map_err(db_err)?;
+    tx.execute_batch("DELETE FROM files; DELETE FROM acts;")
+        .map_err(db_err)?;
     tx.execute("DELETE FROM meta WHERE key <> 'schema_version'", [])
         .map_err(db_err)?;
 
@@ -85,26 +95,42 @@ pub fn replace(conn: &mut Connection, catalog: &Catalog) -> Result<()> {
     set(&tx, "root", &catalog.root)?;
     set(&tx, "scanned_at", &catalog.scanned_at)?;
     set(&tx, "host", &catalog.host)?;
+    set(&tx, "next_seq", &catalog.acts().next_seq().to_string())?;
 
     {
         let mut stmt = tx
             .prepare(
                 "INSERT INTO files
-                   (path, status, category, restore_method, source,
-                    not_restorable_reason, size, modified)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                   (path, verdict, category, restore_method, source,
+                    verdict_source, present, size, modified)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )
             .map_err(db_err)?;
         for e in catalog.files() {
             stmt.execute(rusqlite::params![
                 e.path,
-                e.status.as_str(),
+                e.verdict.as_str(),
                 e.category.map(Category::as_str),
                 e.restore_method,
                 e.source.map(Source::as_str),
-                e.not_restorable_reason,
+                e.verdict_source.as_str(),
+                e.present as i64,
                 e.size,
                 e.modified,
+            ])
+            .map_err(db_err)?;
+        }
+    }
+    {
+        let mut stmt = tx
+            .prepare("INSERT INTO acts (seq, path, kind, method) VALUES (?1, ?2, ?3, ?4)")
+            .map_err(db_err)?;
+        for a in catalog.acts().acts() {
+            stmt.execute(rusqlite::params![
+                a.seq as i64,
+                a.path,
+                a.kind.as_str(),
+                a.method,
             ])
             .map_err(db_err)?;
         }
@@ -121,42 +147,73 @@ pub fn load(conn: &Connection) -> Result<Catalog> {
     let host = get(conn, "host").unwrap_or_default();
 
     let mut stmt = conn
-        .prepare("SELECT path, status, category, restore_method, source, not_restorable_reason, size, modified FROM files")
+        .prepare("SELECT path, verdict, category, restore_method, source, verdict_source, present, size, modified FROM files")
         .map_err(db_err)?;
     let rows = stmt
         .query_map([], |r| {
-            let status: String = r.get(1)?;
+            let verdict: String = r.get(1)?;
             let category: Option<String> = r.get(2)?;
             let source: Option<String> = r.get(4)?;
+            let verdict_source: String = r.get(5)?;
             Ok((
                 r.get::<_, String>(0)?,
-                status,
+                verdict,
                 category,
                 r.get::<_, Option<String>>(3)?,
                 source,
-                r.get::<_, Option<String>>(5)?,
+                verdict_source,
                 r.get::<_, i64>(6)?,
-                r.get::<_, Option<String>>(7)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, Option<String>>(8)?,
             ))
         })
         .map_err(db_err)?;
 
     let mut files = Vec::new();
     for row in rows {
-        let (path, status, category, method, source, reason, size, modified) =
+        let (path, verdict, category, method, source, verdict_source, present, size, modified) =
             row.map_err(db_err)?;
         files.push(FileEntry {
             path,
-            status: parse::<Status>(&status)?,
+            verdict: parse::<Verdict>(&verdict)?,
             category: category.map(|c| parse::<Category>(&c)).transpose()?,
             restore_method: method,
             source: source.map(|s| parse::<Source>(&s)).transpose()?,
-            not_restorable_reason: reason,
+            verdict_source: parse::<Origin>(&verdict_source)?,
+            present: present != 0,
             size,
             modified,
         });
     }
-    Catalog::new(root, scanned_at, host, files)
+
+    let mut acts = Vec::new();
+    let mut stmt = conn
+        .prepare("SELECT seq, path, kind, method FROM acts ORDER BY seq")
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .map_err(db_err)?;
+    for row in rows {
+        let (seq, path, kind, method) = row.map_err(db_err)?;
+        acts.push(Act {
+            seq: seq as u64,
+            path,
+            kind: parse::<ActKind>(&kind)?,
+            method,
+        });
+    }
+    let next_seq = get(conn, "next_seq")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    Catalog::new(root, scanned_at, host, files, ActLog::new(acts, next_seq))
 }
 
 fn set(tx: &rusqlite::Transaction<'_>, key: &str, value: &str) -> Result<()> {
@@ -205,11 +262,14 @@ mod db_tests {
             Some(Category::Config),
             "git checkout -- init.el".into(),
             Source::Verified,
+            Origin::Chive,
             100,
             None,
         );
-        let o = FileEntry::new_orphaned("tmp/x".into(), None, 3, None);
-        Catalog::new("/home/u".into(), "t".into(), "h".into(), vec![e, o]).unwrap()
+        let o = FileEntry::new_unknown("tmp/x".into(), None, 3, None);
+        let mut acts = ActLog::default();
+        acts.append(Act::teach(0, "future/x", "echo built"));
+        Catalog::new("/home/u".into(), "t".into(), "h".into(), vec![e, o], acts).unwrap()
     }
 
     #[test]
@@ -243,7 +303,7 @@ mod db_tests {
         // version gate could never fire.
         let mut conn = temp_conn();
         replace(&mut conn, &sample()).unwrap();
-        assert_eq!(get(&conn, "schema_version").as_deref(), Some("1"));
+        assert_eq!(get(&conn, "schema_version").as_deref(), Some("2"));
     }
 
     #[test]
@@ -264,14 +324,22 @@ mod db_tests {
     }
 
     #[test]
-    fn status_from_str_covers_all_spellings() {
-        assert_eq!(Status::from_str("restorable"), Ok(Status::Restorable));
-        assert_eq!(
-            Status::from_str("not-restorable"),
-            Ok(Status::NotRestorable)
-        );
-        assert_eq!(Status::from_str("temporary"), Ok(Status::Temporary));
-        assert_eq!(Status::from_str("orphaned"), Ok(Status::Orphaned));
-        assert!(Status::from_str("bogus").is_err());
+    fn verdict_from_str_covers_all_spellings() {
+        assert_eq!(Verdict::from_str("restorable"), Ok(Verdict::Restorable));
+        assert_eq!(Verdict::from_str("unknown"), Ok(Verdict::Unknown));
+        assert_eq!(Verdict::from_str("disposable"), Ok(Verdict::Disposable));
+        assert!(Verdict::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn the_act_log_round_trips_through_the_index() {
+        // D20: the derived index carries the owner's decisions too, so a
+        // rebuild cannot silently lose them.
+        let mut conn = temp_conn();
+        let c = sample();
+        replace(&mut conn, &c).unwrap();
+        let back = load(&conn).unwrap();
+        assert_eq!(back.acts().acts(), c.acts().acts());
+        assert_eq!(back.acts().next_seq(), c.acts().next_seq());
     }
 }

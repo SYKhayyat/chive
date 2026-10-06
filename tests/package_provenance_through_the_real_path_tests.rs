@@ -34,8 +34,8 @@ fn each_package_manager_yields_its_documented_reinstall_recipe() {
         assert!(code == 0, "scan failed (manager {manager}):\n{out}");
         let line = env.status_line(rel);
         assert!(
-            line.contains("restorable") && line.contains("verified"),
-            "[{manager}] {rel} should be restorable(verified):\n{line}"
+            line.contains("restorable") && line.contains("chive"),
+            "[{manager}] {rel} should be restorable:\n{line}"
         );
 
         // The recipe is the documented reinstall for that package.
@@ -48,14 +48,14 @@ fn each_package_manager_yields_its_documented_reinstall_recipe() {
 }
 
 #[test]
-fn a_file_no_manager_owns_is_orphaned_even_with_managers_present() {
+fn a_file_no_manager_owns_is_a_hole_even_with_managers_present() {
     let env = Env::new("orphan_with_managers");
     // write managers + a file that no fake manager owns
     env.put("misc/notes.txt", "body");
     let (out, _) = env.run(&["scan", env.home.to_str().unwrap()]);
     println!("{out}");
     assert!(
-        env.status_line("misc/notes.txt").contains("orphaned"),
-        "unowned file must be orphaned even when package managers exist"
+        env.status_line("misc/notes.txt").contains("unknown"),
+        "unowned file must be a hole even when package managers exist"
     );
 }

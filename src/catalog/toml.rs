@@ -5,20 +5,27 @@
 //! mirror the schema in `docs/spec/target-state.md` exactly, and
 //! [`from_catalog`]/[`to_catalog`] are the only boundary the model crosses,
 //! keeping the trim of optional fields in one place.
+//!
+//! The act log lives here rather than in a sidecar file, because the catalog is
+//! what travels to a new machine: a judgement kept elsewhere would stay behind
+//! with the old machine (D20).
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::act::{Act, ActLog};
 use crate::catalog::Catalog;
 use crate::error::{Error, Result};
-use crate::model::{Category, FileEntry, Source, Status};
+use crate::model::{Category, FileEntry, Origin, Source, Verdict};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct TomlCatalog {
     meta: TomlMeta,
     #[serde(default)]
     files: Vec<TomlFile>,
+    #[serde(default)]
+    acts: Vec<Act>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -26,12 +33,16 @@ struct TomlMeta {
     root: String,
     scanned_at: String,
     host: String,
+    /// The next owner-act sequence number. Written so a hand-edited catalog can
+    /// append an act without inventing a number that already exists.
+    #[serde(default)]
+    next_seq: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct TomlFile {
     path: String,
-    status: Status,
+    verdict: Verdict,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     category: Option<Category>,
     #[serde(
@@ -42,22 +53,30 @@ struct TomlFile {
     restore_method: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source: Option<Source>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    not_restorable_reason: Option<String>,
+    verdict_source: Origin,
+    #[serde(default = "default_present")]
+    present: bool,
     size: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     modified: Option<String>,
+}
+
+/// A file entry always describes a path the scan walked, so an absent `present`
+/// key in a hand-written catalog means "present".
+fn default_present() -> bool {
+    true
 }
 
 impl TomlFile {
     fn from_entry(e: &FileEntry) -> Self {
         TomlFile {
             path: e.path.clone(),
-            status: e.status,
+            verdict: e.verdict,
             category: e.category,
             restore_method: e.restore_method.clone(),
             source: e.source,
-            not_restorable_reason: e.not_restorable_reason.clone(),
+            verdict_source: e.verdict_source,
+            present: e.present,
             size: e.size,
             modified: e.modified.clone(),
         }
@@ -66,33 +85,33 @@ impl TomlFile {
     fn into_entry(self, file_index: usize, catalog: &Path) -> Result<FileEntry> {
         let at = format!("{}: files[{file_index}]", catalog.display());
         let name = self.path.clone();
-        let valid = self.size >= 0 && self.status_is_consistent(&self.status);
+        let valid = self.size >= 0 && self.verdict_is_consistent(&self.verdict);
         let entry = FileEntry {
             path: self.path,
-            status: self.status,
+            verdict: self.verdict,
             category: self.category,
             restore_method: self.restore_method,
             source: self.source,
-            not_restorable_reason: self.not_restorable_reason,
+            verdict_source: self.verdict_source,
+            present: self.present,
             size: self.size,
             modified: self.modified,
         };
         if !valid {
             return Err(Error::Catalog(format!(
-                "entry {name:?} ({at}) has an invalid size or status/recipe combination"
+                "entry {name:?} ({at}) has an invalid size or verdict/recipe combination"
             )));
         }
         Ok(entry)
     }
 
-    fn status_is_consistent(&self, status: &Status) -> bool {
-        let restorable = *status == Status::Restorable;
-        // A restorable entry must carry a recipe and a source; a non-restorable
-        // one must not.
-        if restorable {
-            self.restore_method.is_some() && self.source.is_some()
-        } else {
-            self.restore_method.is_none() && self.source.is_none()
+    /// A `restorable` entry must carry a recipe; anything else must not, because
+    /// a verdict that says "cannot rebuild this" beside a recipe is a
+    /// contradiction the archive would then have to resolve silently.
+    fn verdict_is_consistent(&self, verdict: &Verdict) -> bool {
+        match verdict {
+            Verdict::Restorable => self.restore_method.is_some(),
+            Verdict::Unknown | Verdict::Disposable => self.restore_method.is_none(),
         }
     }
 }
@@ -119,7 +138,13 @@ pub fn from_str(text: &str, path: &Path) -> Result<Catalog> {
         .enumerate()
         .map(|(i, f)| f.into_entry(i, path))
         .collect::<Result<Vec<_>>>()?;
-    Catalog::new(doc.meta.root, doc.meta.scanned_at, doc.meta.host, files)
+    Catalog::new(
+        doc.meta.root,
+        doc.meta.scanned_at,
+        doc.meta.host,
+        files,
+        ActLog::new(doc.acts, doc.meta.next_seq),
+    )
 }
 
 /// Serialize a catalog to TOML text.
@@ -129,8 +154,10 @@ pub fn to_catalog_string(catalog: &Catalog) -> String {
             root: catalog.root.clone(),
             scanned_at: catalog.scanned_at.clone(),
             host: catalog.host.clone(),
+            next_seq: catalog.acts().next_seq(),
         },
         files: catalog.files().iter().map(TomlFile::from_entry).collect(),
+        acts: catalog.acts().acts().to_vec(),
     };
     toml::to_string(&doc).expect("catalog must serialize")
 }
@@ -158,52 +185,59 @@ mod toml_tests {
             Some(Category::Config),
             "git -C ~/dotfiles checkout HEAD -- conf/init.el".into(),
             Source::Verified,
+            Origin::Chive,
             2048,
             Some("2026-08-15T10:00:00Z".into()),
         );
-        let o =
-            FileEntry::new_orphaned("Pictures/photo.nef".into(), Some(Category::Image), 25, None);
+        let u =
+            FileEntry::new_unknown("Pictures/photo.nef".into(), Some(Category::Image), 25, None);
+        let mut acts = ActLog::default();
+        acts.append(Act::dispose(0, "Documents/notes.pdf"));
         Catalog::new(
             "/home/user".into(),
             "2026-09-04T12:00:00Z".into(),
             "desktop".into(),
-            vec![e, o],
+            vec![e, u],
+            acts,
         )
         .unwrap()
     }
 
     #[test]
-    fn round_trips_metadata_and_files() {
+    fn round_trips_metadata_files_and_acts() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("catalog.toml");
         let c = sample_catalog();
         write(&c, &p).unwrap();
         let back = read(&p).unwrap();
-        assert_eq!(back, c);
+        assert_eq!(back, c, "the act log must survive the round trip");
+        assert_eq!(back.acts().len(), 1);
+        assert_eq!(back.acts().next_seq(), 1);
     }
 
     #[test]
     fn serialized_shape_matches_docs_vocabulary() {
         let text = to_catalog_string(&sample_catalog());
         assert!(text.contains("root = \"/home/user\""));
-        assert!(text.contains("status = \"restorable\""));
+        assert!(text.contains("verdict = \"restorable\""));
+        assert!(text.contains("verdict = \"unknown\""));
         assert!(text.contains("source = \"verified\""));
+        assert!(text.contains("verdict_source = \"chive\""));
         assert!(text.contains("restore_method ="));
         assert!(text.contains("category = \"config\""));
         assert!(text.contains("[[files]]"));
+        assert!(text.contains("[[acts]]"));
+        assert!(text.contains("kind = \"dispose\""));
     }
 
     #[test]
-    fn orphaned_entry_leaves_recipe_and_source_absent() {
-        let c = sample_catalog();
-        let text = to_catalog_string(&c);
-        // The single orphaned entry (photo.nef) must not carry source or method.
-        assert_eq!(text.matches("source = \"verified\"").count(), 1);
+    fn an_unknown_entry_leaves_the_recipe_absent() {
+        let text = to_catalog_string(&sample_catalog());
         assert_eq!(text.matches("restore_method =").count(), 1);
     }
 
     #[test]
-    fn rejects_restorable_entry_without_a_method() {
+    fn rejects_a_restorable_entry_without_a_method() {
         let text = r#"
 [meta]
 root = "/x"
@@ -211,39 +245,106 @@ scanned_at = "t"
 host = "h"
 [[files]]
 path = "a"
-status = "restorable"
+verdict = "restorable"
+verdict_source = "owner"
 size = 0
 "#;
-        let err = from_str(text, Path::new("t.toml")).unwrap_err();
-        assert!(matches!(err, Error::Catalog(_) | Error::Parse { .. }));
+        assert!(from_str(text, Path::new("t.toml")).is_err());
     }
 
     #[test]
-    fn parses_docs_example_schema() {
-        // A replica of the `[[files]]` shapes from target-state.md, with every
-        // nullable field exercised (category = null, missing recipe on a
-        // temporary file), must deserialize.
-        let hand = r#"
+    fn rejects_a_recipe_beside_a_verdict_that_says_it_cannot_be_rebuilt() {
+        let text = r#"
 [meta]
-root = "/home/user"
-scanned_at = "2026-09-04T12:00:00Z"
-host = "desktop"
+root = "/x"
+scanned_at = "t"
+host = "h"
 [[files]]
-path = "conf/emacs.d/init.el"
-status = "restorable"
-category = "config"
-restore_method = "git -C ~/dotfiles checkout HEAD -- conf/emacs.d/init.el"
-source = "verified"
-size = 2048
-modified = "2026-08-15T10:00:00Z"
-[[files]]
-path = "tmp/emacs-workfile-~"
-status = "temporary"
+path = "a"
+verdict = "disposable"
+verdict_source = "owner"
+restore_method = "echo hi"
 size = 0
 "#;
-        let c = from_str(hand, Path::new("x.toml")).unwrap();
-        assert_eq!(c.files().len(), 2);
-        assert_eq!(c.files()[1].status, Status::Temporary);
-        assert_eq!(c.files()[1].category, None);
+        assert!(from_str(text, Path::new("t.toml")).is_err());
+    }
+
+    #[test]
+    fn refuses_the_retired_status_spellings() {
+        // No legacy reader: an old-format catalog is an error, not a guess.
+        for gone in ["temporary", "orphaned", "not-restorable"] {
+            let text = format!(
+                "[meta]\nroot = \"/x\"\nscanned_at = \"t\"\nhost = \"h\"\n\
+                 [[files]]\npath = \"a\"\nstatus = \"{gone}\"\nsize = 0\n"
+            );
+            assert!(
+                from_str(&text, Path::new("t.toml")).is_err(),
+                "{gone} must not parse"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hand_edited_act_is_as_valid_as_a_written_one() {
+        // The catalog is the interface, not a dump (D20).
+        let text = r#"
+[meta]
+root = "/x"
+scanned_at = "t"
+host = "h"
+next_seq = 2
+[[files]]
+path = "a"
+verdict = "disposable"
+verdict_source = "owner"
+size = 0
+[[acts]]
+seq = 1
+path = "a"
+kind = "dispose"
+"#;
+        let c = from_str(text, Path::new("t.toml")).unwrap();
+        assert_eq!(
+            c.acts().latest("a").unwrap().kind,
+            crate::act::ActKind::Dispose
+        );
+        assert_eq!(c.acts().next_seq(), 2);
+    }
+
+    #[test]
+    fn a_teach_act_carries_its_recipe() {
+        // Issue #45: the recipe lives in the act, so it reaches a new machine
+        // through export with no join against a sidecar file.
+        let text = r#"
+[meta]
+root = "/x"
+scanned_at = "t"
+host = "h"
+[[acts]]
+seq = 1
+path = "future/x"
+kind = "teach"
+method = "echo built > '{dest}'"
+"#;
+        let c = from_str(text, Path::new("t.toml")).unwrap();
+        assert_eq!(
+            c.acts().active_recipes().get("future/x").copied(),
+            Some("echo built > '{dest}'")
+        );
+    }
+
+    #[test]
+    fn an_escaping_act_path_is_refused_like_any_entry_path() {
+        let text = r#"
+[meta]
+root = "/x"
+scanned_at = "t"
+host = "h"
+[[acts]]
+seq = 1
+path = "../escape"
+kind = "dispose"
+"#;
+        assert!(from_str(text, Path::new("t.toml")).is_err());
     }
 }

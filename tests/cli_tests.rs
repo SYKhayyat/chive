@@ -57,10 +57,13 @@ fn scan_then_status_and_stats() {
     let s = String::from_utf8_lossy(&out);
     assert!(s.contains("notes.md"), "status lists notes.md:\n{s}");
     assert!(
-        s.contains("orphaned"),
-        "notes.md is orphaned without provenance"
+        s.contains("unknown"),
+        "an unexplained file is a hole (D19): notes.md has no provenance\n{s}"
     );
-    assert!(s.contains("temporary"), "scratch~ is temporary");
+    assert!(
+        s.contains("unknown"),
+        "and a name the retired heuristic guessed about is a hole too: scratch~\n{s}"
+    );
 
     let stats = env.chive().arg("stats").assert().success();
     let so = String::from_utf8_lossy(&stats.get_output().stdout);
@@ -87,7 +90,7 @@ fn scan_respects_ignore_and_teach_overrules() {
     assert!(!s.contains("junk.js"), "node_modules is ignored:\n{s}");
     assert!(s.contains("conf.ini"));
 
-    // Teach an inferred->orphaned file; it becomes restorable (user_supplied).
+    // Teach an unexplained file; it becomes restorable and owner-decided.
     env.chive()
         .args(["teach", "conf.ini"])
         .args(["--method", "cp ~/seed/conf.ini '{dest}'"])
@@ -96,13 +99,44 @@ fn scan_respects_ignore_and_teach_overrules() {
     let status = env.chive().arg("status").assert().success();
     let s = String::from_utf8_lossy(&status.get_output().stdout);
     assert!(
-        s.contains("user_supplied"),
-        "taught recipe is user_supplied:\n{s}"
+        s.contains("restorable") && s.contains("owner"),
+        "taught recipe is an owner-decided restorable:\n{s}"
     );
 }
 
 #[test]
-fn mark_changes_status_and_survives_reload() {
+fn holes_leads_with_what_cannot_be_rebuilt() {
+    // D23: the loop the product exists to support had no verb.
+    let env = Env::new();
+    env.put("small.nef", "a");
+    env.put("big.nef", &"x".repeat(4096));
+    env.put("notes.md", &"y".repeat(2048));
+    env.chive()
+        .arg("scan")
+        .arg(env.tree.path())
+        .assert()
+        .success();
+    env.chive()
+        .args(["teach", "notes.md"])
+        .args(["--method", "echo x > '{dest}'"])
+        .assert()
+        .success();
+
+    let out = env.chive().args(["holes"]).assert().success();
+    let s = String::from_utf8_lossy(&out.get_output().stdout);
+    assert!(s.contains("2 holes"), "holes counted:\n{s}");
+    assert!(s.contains("big.nef"), "the big hole is listed:\n{s}");
+    assert!(
+        !s.contains("notes.md"),
+        "a restorable path is not a hole:\n{s}"
+    );
+    let big = s.find("big.nef").unwrap();
+    let small = s.find("small.nef").unwrap();
+    assert!(big < small, "largest hole first:\n{s}");
+}
+
+#[test]
+fn dispose_makes_a_path_cleanable_and_it_survives_reload() {
     let env = Env::new();
     env.put("photo.nef", "bytes");
     env.chive()
@@ -112,13 +146,16 @@ fn mark_changes_status_and_survives_reload() {
         .success();
 
     env.chive()
-        .args(["mark", "photo.nef", "--status", "not-restorable"])
+        .args(["dispose", "photo.nef"])
         .assert()
         .success();
 
     let status = env.chive().arg("status").assert().success();
     let s = String::from_utf8_lossy(&status.get_output().stdout);
-    assert!(s.contains("not-restorable"), "mark persisted:\n{s}");
+    assert!(
+        s.contains("disposable") && s.contains("owner"),
+        "the disposal persisted and is owner-owned:\n{s}"
+    );
 }
 
 #[test]
@@ -138,25 +175,30 @@ fn clean_dry_run_and_force() {
         .assert()
         .success();
 
-    let dry = env
-        .chive()
-        .args(["clean", "--scope", "both", "--dry-run"])
-        .assert()
-        .success();
+    let dry = env.chive().args(["clean", "--dry-run"]).assert().success();
     let s = String::from_utf8_lossy(&dry.get_output().stdout);
-    assert!(s.contains("trash~"), "dry-run lists the temp file:\n{s}");
+    assert!(
+        s.contains("Would remove 0"),
+        "nothing is cleanable until something says so (D19):\n{s}"
+    );
+
+    // so the owner must say so
+    env.chive().args(["dispose", "trash~"]).assert().success();
+    let dry = env.chive().args(["clean", "--dry-run"]).assert().success();
+    let s = String::from_utf8_lossy(&dry.get_output().stdout);
+    assert!(
+        s.contains("trash~"),
+        "dry-run lists the disposed file:\n{s}"
+    );
     assert!(
         !s.contains("keep.md"),
         "dry-run must not list the restorable file"
     );
 
-    env.chive()
-        .args(["clean", "--scope", "both", "--force"])
-        .assert()
-        .success();
+    env.chive().args(["clean", "--force"]).assert().success();
     assert!(
         !env.tree.path().join("trash~").exists(),
-        "temp file was removed"
+        "the disposed file was removed"
     );
     assert!(
         env.tree.path().join("keep.md").exists(),
@@ -243,7 +285,7 @@ fn plan_and_restore_preview_and_rebuild() {
 }
 
 #[test]
-fn status_filter_selects_by_status() {
+fn status_filter_selects_by_verdict() {
     let env = Env::new();
     env.put("done.md", "x");
     env.put("temp~", "y");
@@ -266,19 +308,16 @@ fn status_filter_selects_by_status() {
         .success();
     let s = String::from_utf8_lossy(&restorable.get_output().stdout);
     assert!(s.contains("done.md"));
-    assert!(
-        !s.contains("temp~"),
-        "--restorable hides temporary files:\n{s}"
-    );
+    assert!(!s.contains("temp~"), "--restorable hides holes:\n{s}");
 
-    let temp = env
+    let unknown = env
         .chive()
         .arg("status")
-        .arg("--temporary")
+        .arg("--unknown")
         .assert()
         .success();
-    let s = String::from_utf8_lossy(&temp.get_output().stdout);
-    assert!(s.contains("temp~"));
+    let s = String::from_utf8_lossy(&unknown.get_output().stdout);
+    assert!(s.contains("temp~"), "a hole shows under --unknown:\n{s}");
 }
 
 #[test]
