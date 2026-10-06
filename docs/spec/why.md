@@ -170,3 +170,11 @@ Package-owned files don't use `{dest}` because the package manager decides where
 ## Non-goals
 
 Byte recovery and inode forensics are a different product (see D0): chive promises a recipe, not resurrection of unlinked data. The restore manager (D2) is deliberately kept out of the MVP so the core restore loop is proven before a manager sits on top of it.
+
+## The code is a suggestion (D17)
+
+The implementation predates the settled purpose, so it encodes a model chive no longer holds: four statuses designed to make `clean` safe, a flat catalog with no hierarchy, and a `mark` that a rescan erases. Those are not decisions anyone made — they are what happened while the shape was still being guessed. Reading them as a contract would preserve the accidents along with the intent, and holding them fixed would make the *correct* changes (#38's three verdicts, #41's hierarchy, #43's durable verdicts) harder than preserving the wrong ones.
+
+So the status model, the CLI surface, both catalog schemas, the store layout and the module structure are all changeable without asking, and a test that pins provisional behaviour goes with the shape it pinned rather than outliving it.
+
+The limit matters as much as the permission. Provisional is a statement about *design*, not about *quality*: a defect that deletes a file the owner protected (#43) is not softened by the code around it being provisional, a containment check is not a suggestion because the module holding it is, and none of this excuses skipping the verify chain. If reshaping the model makes the fix easier, reshape it — and still fix the defect, still write the resolving test, in the same commit.

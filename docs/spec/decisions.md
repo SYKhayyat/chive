@@ -77,3 +77,11 @@ Every open question lives here with a status. Do not answer an open question in 
 - **Status**: ruled
 - **Why**: The owner's explicit recipe is stronger evidence of intent than any automatic provenance detection. Teaching is a statement of *how to rebuild this file*; a scan-time inference is only a guess. Rules 2–4 of the scan order (temporary blob, provenance, orphaned) are all guesses about a file chive has not been told about.
 - **Ruling**: A user-taught recipe (`recipes.toml`, via `chive teach`) wins over every automatic classification for that path. Teaching works on a file in any of the four statuses and always promotes it to `restorable`, source `user_supplied`. `chive mark --status <not-restorable|temporary|orphaned>` is the unified verb for explicit status changes, folding the original `protect` command; marking clears a recipe.
+
+### D17 — The existing code is provisional
+
+- **Status**: ruled
+- **Why**: The implementation was scaffolded before the product's purpose was settled, and it encodes a model the purpose no longer supports: four statuses designed around `clean`, a flat catalog with no hierarchy, and a `mark` verb that does not survive a rescan. Treating that code as a contract would preserve the mistakes; treating it as untouchable would make the correct fixes (#38, #41, #43) strictly harder than the wrong ones. A rewrite that keeps reverse-engineering intent from provisional code is not a rewrite.
+- **Ruling**: Every line of `src/` is a **suggestion, not a contract**. The status model and its names, the CLI surface and its flags, the catalog TOML and SQLite schemas, the store layout, and the module structure may be changed without asking. Tests that pin provisional behaviour rather than a rule in `target-state.md` may be deleted, not preserved.
+- **Not part of the ruling** — this does not make correctness optional. Real defects are still fixed in the same change with a resolving test (#32, #33, #34 and #43 destroy data through ordinary commands). Security boundaries are not suggestions (path containment, #14). The verify chain still runs (`CLAUDE.md:46-48`). And no compatibility shim is kept to preserve a shape nobody ruled on (`CLAUDE.md:32-34`).
+- **Stated in**: `PLAN.md` ("The code is a suggestion") and `docs/spec/why.md`.

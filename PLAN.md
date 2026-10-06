@@ -3,6 +3,37 @@
 Worker loop: top unchecked item only, fix + test, commit, check off, stop.
 Note: all 11 commits are ds-era (scaffolded 09-05/06) — review as new code, not fixes.
 
+## The code is a suggestion
+
+Every line of `src/` is **provisional**. It was scaffolded before the purpose was
+settled (#40), against a model the purpose no longer supports: four statuses
+designed to make `clean` safe, a flat per-file catalog with no hierarchy, and a
+`mark` verb that does not survive a rescan. None of that is a contract, and no
+worker should reverse-engineer intent from it.
+
+**Freely changeable, without asking:** the status model and its names, the CLI
+surface and its flags, the catalog TOML and SQLite schemas, the store layout,
+the module structure, and any test that pins *provisional behaviour* rather than
+a rule in `target-state.md`.
+
+**Not excused by this:**
+
+- **Real defects are still real defects.** #32, #33, #34 and #43 destroy data
+  through ordinary commands with no error anywhere. Being provisional does not
+  make them tolerable, and "the code was only a suggestion" is never a reason to
+  leave one open.
+- **Security boundaries are not suggestions** — path containment
+  (`target-state.md:19-34`) and the shell-fabrication gap in #14.
+- **The verify chain still runs** (`CLAUDE.md:46-48`).
+- **No shim preserves an unruled shape.** If a thing is replaced, the old thing
+  goes with it, including its tests (`CLAUDE.md:32-34`).
+
+Provisional design is not optional correctness. If the correct fix is easier
+because you may reshape the model, reshape it — but the defect still gets fixed
+and still gets a resolving test in the same change.
+
+Ruled as **D17**; rationale in `docs/spec/why.md`.
+
 ## Phase 0 — Framing (ruling, no code — not worker-loop work)
 - [ ] #40 chive is the home.nix you never wrote: an imperative NixOS, read back from the machine. The archive is the product; cleaning is a side benefit. **Owner ruling** (CLAUDE.md:11-16). Lands first so #38/#39/#41/#42 cite it instead of re-deriving it. Evidence of misallocated attention: D10 ruled a `clean` confirmation prompt while the archive's own headline flow stayed broken (#35); D14 designed the status model around `clean`; `stats` leads with percentages instead of holes.
 
