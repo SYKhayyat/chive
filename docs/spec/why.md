@@ -61,8 +61,20 @@ non-functional:
 - a symlink whose target does not resolve. On a `/nix/store`-backed home
   directory this is not an edge case; a collected generation leaves dozens
   behind, and every one of them is a file that cannot do its job.
-- a file whose owning package is no longer installed.
-- a file inside a directory the owner declared.
+
+Two cases that looked like they belonged here were removed rather than shipped.
+
+**Removed-package residue** would require remembering that a package once owned
+the file and then checking whether the package is still installed. The check is
+easy; the memory is the problem, because "chive believes this used to be owned"
+is a guess wearing a fact's clothes — the same inference D19 removes, and the
+one with a delete attached. It is available as a rule, where the owner is the one
+making the claim. **A declared directory** needs no new mechanism at all: a rule
+matching the path prefix is the same statement, so a built-in would be a second
+way to say one thing.
+
+Both were cut because a rule that covers them costs the owner one line, while a
+built-in that *guesses* them costs them files.
 
 Name-based heuristics are excluded on purpose. `*.tmp`, a trailing `~`,
 `emacs-workfile-` — these were the `temporary` heuristic, and they are guesses

@@ -85,12 +85,20 @@ understand it. See D19.
 narrow on purpose. chive may call a file disposable only when it can *prove* the
 file is already non-functional, never when it merely looks like junk:
 
-- a symlink whose target does not resolve (this is not a corner case — a
+- a symlink whose target does not resolve. This is not a corner case — a
   `/nix/store`-backed home directory is full of them once a generation is
-  collected)
-- a file whose owning package is no longer installed (residue of a removed
-  package)
-- a file inside a directory the owner has declared
+  collected, and each one is a file that cannot do its job.
+
+That is the whole list. Two further cases were considered and deliberately left
+out:
+
+- **Removed-package residue.** Proving it would mean remembering that a package
+  once owned the file and checking it is gone; a remembered ownership guess is
+  the same class of inference D19 removes. An owner who wants this states it as
+  a rule.
+- **A directory the owner has declared.** This is expressible as a rule, so the
+  mechanism exists; making it a separate built-in would be the second way to say
+  the same thing.
 
 Name-based heuristics — `*.tmp`, a trailing `~`, `emacs-workfile-` — do **not**
 qualify. Guessing from a filename is the inference D19 removed, so those are
