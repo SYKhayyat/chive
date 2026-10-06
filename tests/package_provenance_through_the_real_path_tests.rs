@@ -20,10 +20,10 @@ fn each_package_manager_yields_its_documented_reinstall_recipe() {
         (
             "dpkg",
             "coreutils",
-            "bin/core",
+            "usr/bin/core",
             "sudo apt-get install --reinstall coreutils",
         ),
-        ("pacman", "jq", "bin/jq", "sudo pacman -S jq"),
+        ("pacman", "jq", "usr/bin/jq", "sudo pacman -S jq"),
     ];
 
     for &(manager, pkg, rel, expected) in cases {

@@ -70,6 +70,23 @@ pub struct Manager {
     pub name_match: Option<String>,
     /// The restore recipe shell, with `{pkg}` (and `{dest}` when relevant).
     pub restore: String,
+    /// Prefixes under which this manager's probe could ever answer yes.
+    ///
+    /// An argv adapter otherwise spawns a process for *every* scanned file,
+    /// including every file under `$HOME`, to learn that a path like
+    /// `~/dotfiles/init.el` cannot be owned by dpkg. Declaring the prefixes turns
+    /// that fork into a `starts_with`.
+    ///
+    /// Deliberately distinct from `path_prefix`, which means "derive the package
+    /// from the path and spawn nothing" — a different probe kind with different
+    /// `name_match` semantics. Overloading one field for both would muddy a clean
+    /// two-kind model.
+    ///
+    /// Absent means no prefilter, so a user adapter that omits it behaves exactly
+    /// as before. A wrong prefix can only turn a package recipe into no recipe,
+    /// never the reverse, so the blast radius is bounded by adapter diligence.
+    #[serde(default)]
+    pub owns_under: Vec<String>,
 }
 
 #[derive(Default)]

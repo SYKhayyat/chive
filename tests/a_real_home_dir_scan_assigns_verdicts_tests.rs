@@ -38,7 +38,7 @@ fn a_real_home_dir_scan_assigns_every_verdict() {
     );
 
     // a package that owns files in the home env
-    env.own("pacman", "opt/myapp/bin/app", "myapp");
+    env.own("pacman", "usr/bin/myapp", "myapp");
 
     // a real ignored dir
     env.put("node_modules/junk.js", "x");
@@ -52,7 +52,7 @@ fn a_real_home_dir_scan_assigns_every_verdict() {
     let s = env.ok(&["status"]);
 
     // package-owned -> restorable, chive-decided, via the pacman fake
-    let line = env.status_line("opt/myapp/bin/app");
+    let line = env.status_line("usr/bin/myapp");
     assert!(
         line.contains("restorable") && line.contains("chive"),
         "package-owned file must be restorable:\n{line}"

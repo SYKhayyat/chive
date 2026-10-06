@@ -127,6 +127,59 @@ fn bug_package_exists_probe_is_hoisted_out_of_the_per_file_loop() {
     );
 }
 
+/// Issue #50 — the *ownership* probe runs once per file per manager, and the
+/// #20 regression test only counted `--version`, so the suite was structurally
+/// blind to this whole class.
+#[test]
+fn bug_50_ownership_probes_do_not_scale_with_the_file_count() {
+    // The property, not a constant: doubling the files must not double the
+    // ownership probes. A file-count-based assertion would need to know how many
+    // adapters exist, and a seventh manager would break it.
+    let small = Env::new("bug50_small");
+    for i in 0..6 {
+        small.put(&format!("d/file_{i}.txt"), "x");
+    }
+    small.ok(&["scan", small.home.to_str().unwrap()]);
+    let small_calls = small.ownership_probe_count();
+
+    let big = Env::new("bug50_big");
+    for i in 0..24 {
+        big.put(&format!("d/file_{i}.txt"), "x");
+    }
+    big.ok(&["scan", big.home.to_str().unwrap()]);
+    let big_calls = big.ownership_probe_count();
+
+    assert_eq!(
+        small_calls, big_calls,
+        "4x the files must not mean 4x the ownership probes (small {small_calls}, big {big_calls})"
+    );
+}
+
+/// Issue #51 — a manager that declares `owns_under` is never probed for a path
+/// it cannot own, so a home-directory scan forks nothing.
+#[test]
+fn bug_51_owns_under_skips_the_probe_entirely() {
+    let env = Env::new("bug51_prefix");
+    // Everything under the home, which no shipped adapter declares.
+    for i in 0..10 {
+        env.put(&format!("Documents/file_{i}.txt"), "x");
+    }
+    env.ok(&["scan", env.home.to_str().unwrap()]);
+    assert_eq!(
+        env.ownership_probe_count(),
+        0,
+        "a path no adapter can own must cost no subprocess at all"
+    );
+
+    // and a path one *can* own is probed, and still resolves to the right recipe
+    let owned = Env::new("bug51_owned");
+    owned.own("dpkg", "usr/bin/jq", "jq");
+    owned.put("Documents/notes.md", "x");
+    owned.ok(&["scan", owned.home.to_str().unwrap()]);
+    let line = owned.status_line("usr/bin/jq");
+    assert!(line.contains("restorable"), "{line}");
+}
+
 // ---- fixed issue #24: broken package-manager adapters (evidenced by the
 // container harness on alpine/fedora/void and by the realistic fakes here).
 // Each pins the *correct* package name extracted from real manager output.
@@ -134,7 +187,7 @@ fn bug_package_exists_probe_is_hoisted_out_of_the_per_file_loop() {
 #[test]
 fn bug_apk_adapter_extracts_the_package_name() {
     let env = Env::new("bug_apk");
-    env.own("apk", "bin/jq", "jq");
+    env.own("apk", "usr/bin/jq", "jq");
     env.ok(&["scan", env.home.to_str().unwrap()]);
     let line = env.status_line("bin/jq");
     assert!(
@@ -151,7 +204,7 @@ fn bug_apk_adapter_extracts_the_package_name() {
 #[test]
 fn bug_rpm_adapter_extracts_the_bare_package_name() {
     let env = Env::new("bug_rpm");
-    env.own("rpm", "bin/jq", "jq");
+    env.own("rpm", "usr/bin/jq", "jq");
     env.ok(&["scan", env.home.to_str().unwrap()]);
     let (full, _) = env.run(&["status"]);
     // real rpm prints "jq-<ver>-<rel>.x86_64"; the recipe must reinstall `jq`.
@@ -164,7 +217,7 @@ fn bug_rpm_adapter_extracts_the_bare_package_name() {
 #[test]
 fn bug_xbps_adapter_extracts_the_package_name() {
     let env = Env::new("bug_xbps");
-    env.own("xbps", "bin/htop", "htop");
+    env.own("xbps", "usr/bin/htop", "htop");
     env.ok(&["scan", env.home.to_str().unwrap()]);
     let line = env.status_line("bin/htop");
     assert!(

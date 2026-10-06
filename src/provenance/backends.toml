@@ -28,6 +28,7 @@ program = "dpkg"
 detect_args = ["-S", "{path}"]
 name_match = '^([^: ]+)'
 restore = "sudo apt-get install --reinstall {pkg}"
+owns_under = ["/usr", "/bin", "/sbin", "/etc", "/lib", "/lib64", "/opt", "/var/lib/dpkg"]
 
 # Arch / EndeavourOS / Manjaro (pacman).
 [[manager]]
@@ -37,6 +38,7 @@ program = "pacman"
 detect_args = ["-Qo", "{path}"]
 name_match = '(?m)^[^ ].* is owned by ([^ ]+)'
 restore = "sudo pacman -S {pkg}"
+owns_under = ["/usr", "/etc", "/var/lib/pacman", "/var/cache/pacman"]
 
 # Fedora / RHEL / CentOS / openSUSE-with-rpm. --queryformat asks rpm for the
 # bare package name itself, so no regex has to guess where name ends and
@@ -48,6 +50,7 @@ program = "rpm"
 detect_args = ["-qf", "--queryformat", "%{NAME}", "{path}"]
 name_match = '^([A-Za-z0-9_+.-]+)$'
 restore = "sudo dnf reinstall {pkg}"
+owns_under = ["/usr", "/etc", "/var/lib/rpm"]
 
 # DNF-based machines without rpm on PATH: repoquery -f prints the path, the
 # --queryformat form prints the bare name.
@@ -58,6 +61,7 @@ program = "dnf"
 detect_args = ["repoquery", "--queryformat", "%{NAME}", "-f", "{path}"]
 name_match = '^([A-Za-z0-9_+.-]+)$'
 restore = "sudo dnf reinstall {pkg}"
+owns_under = ["/usr", "/etc", "/var/lib/rpm", "/var/cache/dnf"]
 
 # Homebrew (macOS + Linuxbrew). A file under the Cellar is owned by the formula
 # whose directory holds it; no ownership probe to run.
@@ -78,6 +82,7 @@ program = "apk"
 detect_args = ["info", "-W", "{path}"]
 name_match = 'is owned by (.+)-[^-]+-r[0-9]+$'
 restore = "sudo apk add --upgrade {pkg}"
+owns_under = ["/usr", "/etc", "/lib", "/bin", "/sbin", "/var/lib/apk"]
 
 # Void. `xbps-query -o <path>` answers "<pkgver>: <path> (<type>)" where
 # <pkgver> is "pkg-ver_rel"; the bare name is everything before the last
@@ -90,6 +95,7 @@ program = "xbps-query"
 detect_args = ["-o", "{path}"]
 name_match = '^(.+)-[0-9][^-_]*_[0-9]+:'
 restore = "sudo xbps-install -S {pkg}"
+owns_under = ["/usr", "/etc", "/var/db/xbps"]
 
 # Nix / NixOS: deliberately absent. `nix-store -q --deriver` names a
 # *derivation* (.drv) that exists only on the source machine's store, and no

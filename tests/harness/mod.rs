@@ -242,6 +242,16 @@ impl Env {
         let body = std::fs::read_to_string(&self.calls).unwrap_or_default();
         body.lines().count()
     }
+
+    /// Ownership probes specifically: every fake-manager call that was *not* a
+    /// `--version` availability check.
+    ///
+    /// The #20 regression test only counted `--version`, which is why the
+    /// ownership probe could double per file (issue #50) with the suite green.
+    pub fn ownership_probe_count(&self) -> usize {
+        let body = std::fs::read_to_string(&self.calls).unwrap_or_default();
+        body.lines().filter(|l| !l.contains("--version")).count()
+    }
 }
 
 /// Join a scratch dir onto the head of a real PATH, `:`-separated (Unix).

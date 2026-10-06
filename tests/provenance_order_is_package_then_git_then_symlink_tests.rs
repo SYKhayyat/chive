@@ -12,12 +12,12 @@ fn a_package_owned_symlink_gets_the_package_recipe_not_the_ln_recipe() {
     let env = Env::new("order_pkg_vs_symlink");
     // Real managers probe the link path and resolve it to the target, so the
     // ownership fixture names the path chive probes: the link itself.
-    let link = env.symlink("bin/tool", &env.home.join("real/tool"));
+    let link = env.symlink("usr/bin/tool", &env.home.join("real/tool"));
     env.own_at("pacman", &link, "myapp");
 
     env.ok(&["scan", env.home.to_str().unwrap()]);
 
-    let line = env.status_line("bin/tool");
+    let line = env.status_line("usr/bin/tool");
     assert!(
         line.contains("restorable") && line.contains("chive"),
         "package-owned link must be restorable:\n{line}"
@@ -37,7 +37,7 @@ fn a_package_owned_symlink_gets_the_package_recipe_not_the_ln_recipe() {
 fn a_package_owned_file_inside_a_git_repo_gets_the_package_recipe() {
     let env = Env::new("order_pkg_vs_git");
     // A committed file that a package also owns (a vendored binary, say).
-    env.own("pacman", "repo/vendored/tool", "myapp");
+    env.own("pacman", "repo/usr/vendored/tool", "myapp");
     env.git_repo("repo", &["vendored/tool"]);
 
     env.ok(&["scan", env.home.to_str().unwrap()]);

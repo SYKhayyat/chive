@@ -64,33 +64,23 @@ impl<'a> Provenance<'a> {
         }
     }
 
-    /// Order: package → git → symlink, first match wins. The order is the
-    /// documented, load-bearing contract: package recipes are the most
-    /// portable across machines, git recipes second (they need the repo), and
-    /// a plain `ln -s` last. Symlink is still the cheapest *probe*, so the
-    /// per-file cost only pays for the deeper sources when the file actually
-    /// is a link — the doc-comment speed argument lives in the probe cost,
-    /// not the precedence.
+    /// The package recipe for this file, or `None`. Run **once** per file and
+    /// threaded forward to both consumers.
     ///
-    /// A symlink whose target does not resolve is not claimed *by the symlink
-    /// source*: `ln -s` would recreate the same broken link, so it falls
-    /// through to provable-dead and becomes `disposable`. That check belongs to
-    /// [`SymlinkDetector`], not here — a package may legitimately own a link
-    /// whose target is elsewhere, and reinstalling the package restores it.
-    fn detect(&self, abs: &Path) -> Option<Recipe> {
+    /// It used to be computed twice: once for the rule's `package` fact and once
+    /// for the provenance chain, each calling `PackageDetector::detect` with
+    /// identical arguments. With zero rules configured -- the default -- the
+    /// whole adapter fan-out therefore ran twice per file, for every file in the
+    /// tree including every file under `$HOME` (issue #50).
+    fn package_recipe(&self, abs: &Path) -> Option<Recipe> {
         self.package
             .detect(self.runner, &self.available_managers, abs)
-            .or_else(|| self.git.detect(abs))
-            .or_else(|| self.symlink.detect(abs))
     }
 
-    /// The package that claims this file, if any. Exposed to rules as the
-    /// `package` fact: a rule can act on ownership, which the retired filename
-    /// heuristic could not.
-    fn owning_package(&self, abs: &Path) -> Option<String> {
-        self.package
-            .detect(self.runner, &self.available_managers, abs)
-            .and_then(|r| r.package)
+    /// git, then symlink. The package rung is supplied by the caller because it
+    /// was already probed for the rule facts.
+    fn git_then_symlink(&self, abs: &Path) -> Option<Recipe> {
+        self.git.detect(abs).or_else(|| self.symlink.detect(abs))
     }
 }
 
@@ -223,10 +213,17 @@ impl<'a> Scanner<'a> {
             Some(ActKind::Withdraw) | None => {}
         }
 
-        let package = self.provenance.owning_package(&abs);
+        // One probe, two readers. The package rung of the provenance chain and the
+        // rule's `package` fact are the same question, asked once.
+        let package_recipe = self.provenance.package_recipe(&abs);
 
         // 3. The owner's own policy, if a rule has an opinion about this path.
-        let facts = rules::facts_for(&abs, rel, size, package.as_deref());
+        let facts = rules::facts_for(
+            &abs,
+            rel,
+            size,
+            package_recipe.as_ref().and_then(|r| r.package.as_deref()),
+        );
         if let Some((verdict, _label)) = self.rules.evaluate(&facts)? {
             // The origin is the RULE's on every branch. Routing `unknown` through
             // `new_unknown` stamped it `Origin::Chive`, which made a rule-authored
@@ -257,7 +254,7 @@ impl<'a> Scanner<'a> {
             source,
             category: found,
             ..
-        }) = self.provenance.detect(&abs)
+        }) = package_recipe.or_else(|| self.provenance.git_then_symlink(&abs))
         {
             return Ok(FileEntry::new_restorable(
                 rel.to_string(),

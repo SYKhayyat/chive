@@ -31,6 +31,54 @@ struct Compiled {
     name_match: regex::Regex,
 }
 
+impl Compiled {
+    /// Whether this manager could possibly claim `abs`. Cheap: component
+    /// comparison, no subprocess. `true` when the row declares nothing, so an
+    /// adapter that does not opt in behaves exactly as it did before.
+    ///
+    /// Matching is component-aligned and searched anywhere in the path, not a
+    /// raw string `starts_with`. chive scans a home directory, so a file the scan
+    /// reaches is at `/home/u/...` while the paths a package owns are `/usr/...`;
+    /// a plain prefix test would then skip every adapter on every home scan and
+    /// silently turn package-owned files into holes.
+    ///
+    /// Deliberately looser than reality: `/home/u/usr/bin/jq` is not dpkg's file,
+    /// so a probe here answers "no". That costs one subprocess and changes no
+    /// answer — the prefilter skips probes that cannot help, never probes that
+    /// would.
+    fn could_own(&self, abs: &Path) -> bool {
+        if self.spec.owns_under.is_empty() {
+            return true;
+        }
+        let path: Vec<_> = abs.components().collect();
+        self.spec
+            .owns_under
+            .iter()
+            .any(|prefix| contains_components(&path, prefix))
+    }
+}
+
+/// Whether `prefix`'s components appear, contiguously, anywhere in `path`.
+///
+/// A declared prefix names a directory *tree*, so `/bin` must match a path
+/// containing `bin` -- `<root>/bin/jq` -- not one ending with it. Matching is
+/// component-aligned so `/usr` does not match `/usrshare`, and it matches
+/// anywhere because chive scans a home while packages own `/usr`: the file a
+/// scan reaches is at `/home/u/usr/bin/jq` when the package's is at
+/// `/usr/bin/jq`.
+fn contains_components(path: &[std::path::Component<'_>], prefix: &str) -> bool {
+    let want: Vec<&str> = prefix.split('/').filter(|s| !s.is_empty()).collect();
+    if want.is_empty() || want.len() > path.len() {
+        return false;
+    }
+    (0..=path.len() - want.len()).any(|i| {
+        path[i..i + want.len()]
+            .iter()
+            .zip(&want)
+            .all(|(c, w)| c.as_os_str() == *w)
+    })
+}
+
 impl PackageDetector {
     pub fn new(table: Table) -> Result<Self> {
         let mut compiled = Vec::new();
@@ -56,6 +104,12 @@ impl PackageDetector {
         abs_path: &Path,
     ) -> Option<Recipe> {
         for c in &self.managers {
+            // Issue #51: ask the cheap question first. Six of the seven shipped
+            // adapters declare `owns_under`, which removes essentially every
+            // per-file fork on a home-directory scan.
+            if !c.could_own(abs_path) {
+                continue;
+            }
             if let Some(program) = &c.spec.program {
                 // argv-probe manager: only try it if its binary is present.
                 if !available.iter().any(|a| a == program) {
