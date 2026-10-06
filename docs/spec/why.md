@@ -387,9 +387,32 @@ Extension-based classification is the MVP because it's simple and deterministic.
 
 Compound extensions (`.tar.gz`) are special-cased because they're common and the last-extension rule gets them wrong. The list is short and stable.
 
-## Catalog TOML as truth
+## One store, not two
 
-The TOML file is the versionable artifact meant to be committed off-box. SQLite is a derived working index rebuilt from the TOML. This makes the catalog portable (commit the TOML, import on the new machine) and avoids the sync ambiguity of dual stores. See D9.
+The TOML file is the versionable artifact meant to be committed off-box, and it is
+the only store. A derived SQLite index stood beside it and was written on every
+save — and read by nothing. `db::load` and the schema-version gate, the most
+defended code in the file, had zero non-test callers; the three non-test callers
+that existed were all writes. D9's own rationale named the index's purpose as
+*"fast queries (status, restorable-set)"*, and neither query exists: both readers
+filter `catalog.files()` in memory.
+
+Deleting it is the ruling satisfying itself rather than contradicting it. An index
+can only pay off by avoiding the *parse*, and D9 forbids avoiding the parse —
+that is what stops a stale index impersonating a deleted catalog. Measured, the
+trade was not even close: a 50,000-entry catalog parses in 1.1–1.9 s, against 25 ms
+for an indexed filtered query — but at 500,000 entries the parse dominates at ~10 s
+and the index saves none of it. Shall has no index at 142,035 lines and 43
+dependencies either.
+
+Two things went with it, both consequences rather than extras: five hand-written
+`FromStr` impls on the domain model (`Verdict`, `Origin`, `Source`, `Category`,
+`ActKind`) existed **only** for `db::load`, and serde already owned string
+parsing. And `rusqlite` is `bundled`, so the build was compiling a C amalgamation
+of SQLite that a 7m42s release build was mostly waiting on.
+
+One store is also the honest reading of D9. Its *why* was "no sync ambiguity of
+dual stores", and a store nothing reads is ambiguity with no upside.
 
 "Truth" is enforceable only if the derived store is never *read* as one. A
 fallback from missing-TOML to the SQLite index lets the stalest copy win

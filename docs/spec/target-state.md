@@ -370,9 +370,9 @@ The config directory defaults to `~/.config/chive/`. It is a git-worthy director
 
 ```
 ~/.config/chive/
-├── config.toml          # ignore list, verdict rules, scan defaults
+├── config.toml          # ignore list, verdict rules, policies
 ├── catalog.toml         # the catalog: entries + the owner act log (versionable)
-└── catalog.db           # working index (derived, not committed)
+└── adapters/*.toml      # user package-manager adapters (data rows)
 ```
 
 `chive teach` writes to the catalog, not to a separate extension file. The
@@ -380,8 +380,11 @@ rationale is D20: recipes and verdicts are both owner intent, both must survive
 a rescan, and both must travel to a new machine — splitting them across two
 files is what let a verdict die while its recipe lived (issue #43).
 
-The catalog TOML is the versionable artifact. It is written by `chive export`,
-or by `chive scan --to <path>` directly to a path the user specifies.
+The catalog TOML is the versionable artifact *and the only store*. It is written
+by `chive export`, or by `chive scan --to <path>` directly to a path the user
+specifies. There is no derived index beside it: a SQLite copy of the same rows
+existed and had no reader, so it was a second store that could only ever disagree
+with the first (see `why.md`, "One store, not two").
 
 ## Catalog TOML schema
 
@@ -470,35 +473,6 @@ Act fields:
 
 A `withdraw` act does not carry a verdict; it removes the path's owner override
 so the entry re-derives.
-
-## SQLite schema (working index)
-
-```sql
-CREATE TABLE meta (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-
-CREATE TABLE files (
-    path           TEXT PRIMARY KEY,  -- relative to root
-    verdict        TEXT NOT NULL,     -- restorable|unknown|disposable
-    category       TEXT,              -- document|image|code|...|null
-    restore_method TEXT,              -- null unless restorable
-    source         TEXT,              -- verified|user_supplied|null
-    verdict_source TEXT NOT NULL,     -- owner|rule|chive
-    present        INTEGER NOT NULL,  -- 0|1
-    size           INTEGER,
-    modified       TEXT               -- ISO 8601
-);
-
-CREATE TABLE acts (
-    seq   INTEGER PRIMARY KEY,
-    path  TEXT NOT NULL,
-    kind  TEXT NOT NULL              -- teach|dispose|withdraw
-);
-```
-
-`meta` stores: `schema_version`, `root`, `scanned_at`, `host`, `next_seq`.
 
 ## CLI reference
 

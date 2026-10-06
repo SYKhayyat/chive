@@ -5,9 +5,9 @@
 //!
 //! ```text
 //! <config-dir>/
-//! ├── config.toml     # ignore list, verdict rules, scan defaults
+//! ├── config.toml     # ignore list, verdict rules, policies
 //! ├── catalog.toml    # the catalog: entries + the owner act log (versionable)
-//! └── catalog.db      # working index (derived, not committed)
+//! └── adapters/       # user package-manager adapters (data rows)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -47,10 +47,6 @@ impl Store {
         self.dir.join("config.toml")
     }
 
-    pub fn db_file(&self) -> PathBuf {
-        self.dir.join("catalog.db")
-    }
-
     /// The default catalog TOML destination (`catalog.toml` in the config dir),
     /// used when `export`/`scan` gets no explicit `--to`.
     pub fn default_catalog_file(&self) -> PathBuf {
@@ -76,7 +72,6 @@ fn default_config_dir() -> PathBuf {
 }
 
 pub const CONFIG_FILE: &str = "config.toml";
-pub const DB_FILE: &str = "catalog.db";
 
 #[cfg(test)]
 mod store_tests {
@@ -92,7 +87,6 @@ mod store_tests {
     #[test]
     fn sub_paths_are_relative_to_dir() {
         let s = Store::at(PathBuf::from("/tmp/chive-s"));
-        assert_eq!(s.db_file(), PathBuf::from("/tmp/chive-s/catalog.db"));
         assert_eq!(
             s.default_catalog_file(),
             PathBuf::from("/tmp/chive-s/catalog.toml")

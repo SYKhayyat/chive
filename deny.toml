@@ -2,10 +2,10 @@
 yanked = "warn"
 ignore = []
 
-# Direct dependencies: clap, serde, toml, rusqlite, walkdir, thiserror, chrono,
-# regex, libc, rhai. All are MIT or MIT/Apache-2.0 dual-licensed; rusqlite and
-# rhai pull in other permissive licenses transitively, which is what the
-# confidence-threshold below absorbs.
+# Direct dependencies: clap, serde, toml, walkdir, thiserror, chrono, regex,
+# libc, rhai. All are MIT or MIT/Apache-2.0 dual-licensed; rhai pulls in other
+# permissive licenses transitively, which is what the confidence-threshold below
+# absorbs.
 #
 # This comment used to name seven of the ten and was written before `regex`,
 # `libc` and `rhai` existed -- and `rhai` is what D21's whole ruling turns on.

@@ -1,4 +1,3 @@
-pub mod db;
 pub mod toml;
 
 use std::collections::BTreeMap;

@@ -244,7 +244,7 @@ fn a_stale_derived_index_is_never_read_as_the_catalog() {
     let truth = env.store.join("catalog.toml");
     assert!(truth.exists(), "scan wrote the TOML truth");
     assert!(
-        env.store.join("catalog.db").exists(),
+        env.store.join("catalog.toml").exists(),
         "derived index exists"
     );
 

@@ -31,7 +31,6 @@ path = "tests/main.rs"
 clap = { version = "4", features = ["derive", "wrap_help"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-rusqlite = { version = "0.32", features = ["bundled"] }
 walkdir = "2"
 thiserror = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

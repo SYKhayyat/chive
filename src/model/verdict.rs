@@ -1,5 +1,4 @@
 use std::fmt;
-use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -46,19 +45,6 @@ impl fmt::Display for Verdict {
     }
 }
 
-impl FromStr for Verdict {
-    type Err = ();
-
-    fn from_str(s: &str) -> std::result::Result<Self, ()> {
-        match s {
-            "restorable" => Ok(Verdict::Restorable),
-            "unknown" => Ok(Verdict::Unknown),
-            "disposable" => Ok(Verdict::Disposable),
-            _ => Err(()),
-        }
-    }
-}
-
 /// Who decided a verdict. Drives stickiness (D22): an owner's word survives a
 /// rescan, while chive's own inference is re-derived so it can be retracted when
 /// the evidence changes.
@@ -101,19 +87,6 @@ impl fmt::Display for Origin {
     }
 }
 
-impl FromStr for Origin {
-    type Err = ();
-
-    fn from_str(s: &str) -> std::result::Result<Self, ()> {
-        match s {
-            "owner" => Ok(Origin::Owner),
-            "rule" => Ok(Origin::Rule),
-            "chive" => Ok(Origin::Chive),
-            _ => Err(()),
-        }
-    }
-}
-
 #[cfg(test)]
 mod verdict_tests {
     use super::*;
@@ -137,8 +110,11 @@ mod verdict_tests {
 
     #[test]
     fn deserializes_every_verdict_spelling() {
+        // String parsing belongs to serde, not to a hand-written `FromStr`: five
+        // of those existed only to feed the SQLite reader, which had none.
         for v in [Verdict::Restorable, Verdict::Unknown, Verdict::Disposable] {
-            assert_eq!(Verdict::from_str(v.as_str()), Ok(v));
+            let parsed: Verdict = toml::Value::String(v.as_str().into()).try_into().unwrap();
+            assert_eq!(parsed, v);
         }
     }
 
@@ -153,7 +129,8 @@ mod verdict_tests {
         // No legacy reader: a catalog carrying the old model must be refused
         // outright rather than quietly reinterpreted.
         for gone in ["not-restorable", "temporary", "orphaned"] {
-            assert_eq!(Verdict::from_str(gone), Err(()), "{gone} must not parse");
+            let parsed: Result<Verdict, _> = toml::Value::String(gone.into()).try_into();
+            assert!(parsed.is_err(), "{gone} must not parse");
         }
     }
 

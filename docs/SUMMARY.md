@@ -73,12 +73,14 @@ chive failed to explain it.
 
 ```
 ~/.config/chive/
-├── config.toml      # ignore list, verdict rules, defaults
+├── config.toml      # ignore list, verdict rules, policies
 ├── catalog.toml     # the catalog: entries + the owner act log (versionable)
-└── catalog.db       # working index (derived from TOML)
+└── adapters/        # user package-manager adapters (data rows)
 ```
 
-The catalog TOML is the source of truth. SQLite is a derived index.
+The catalog TOML is the only store. A derived SQLite index once stood beside it,
+was written on every save, and was read by nothing — so it was a second store that
+could only disagree with the first.
 
 ## MVP scope
 
@@ -89,7 +91,6 @@ The catalog TOML is the source of truth. SQLite is a derived index.
 - Rhai verdict rules in `config.toml`
 - Provable-dead detection (dangling symlink, removed-package residue)
 - TOML catalog format with concrete schema
-- SQLite working index
 - Ignore list for skipped directories
 
 ## Non-goals (MVP)

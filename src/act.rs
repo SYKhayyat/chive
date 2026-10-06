@@ -33,19 +33,6 @@ pub enum ActKind {
     Withdraw,
 }
 
-impl std::str::FromStr for ActKind {
-    type Err = ();
-
-    fn from_str(s: &str) -> std::result::Result<Self, ()> {
-        match s {
-            "teach" => Ok(ActKind::Teach),
-            "dispose" => Ok(ActKind::Dispose),
-            "withdraw" => Ok(ActKind::Withdraw),
-            _ => Err(()),
-        }
-    }
-}
-
 impl ActKind {
     pub fn as_str(self) -> &'static str {
         match self {

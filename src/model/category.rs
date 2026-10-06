@@ -45,25 +45,6 @@ impl fmt::Display for Category {
     }
 }
 
-impl std::str::FromStr for Category {
-    type Err = ();
-
-    fn from_str(s: &str) -> std::result::Result<Self, ()> {
-        match s {
-            "document" => Ok(Category::Document),
-            "image" => Ok(Category::Image),
-            "code" => Ok(Category::Code),
-            "config" => Ok(Category::Config),
-            "program" => Ok(Category::Program),
-            "audio" => Ok(Category::Audio),
-            "video" => Ok(Category::Video),
-            "archive" => Ok(Category::Archive),
-            "data" => Ok(Category::Data),
-            _ => Err(()),
-        }
-    }
-}
-
 /// Classify a path by its (case-insensitive) extension. Returns `None` for
 /// dot-files, extensionless files, and unknown extensions.
 ///

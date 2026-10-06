@@ -4,10 +4,13 @@ use serde::{Deserialize, Serialize};
 
 /// Whether a recipe was inferred by chive or supplied by the owner.
 ///
-/// This is a statement about the *recipe's* provenance, not the file's, and it
-/// stays orthogonal to [`Status`][crate::model::Status]. Both a verified and a
-/// user-supplied entry can be `restorable`; the tag only tells the user how to
-/// weigh trust in the recipe.
+/// This is a statement about the *recipe's* provenance, not the file's, and it is
+/// separate from [`Origin`][crate::model::Origin], which says who may revise the
+/// verdict. Both a verified and a user-supplied entry can be `restorable`; the tag
+/// only tells the user how to weigh trust in the recipe.
+///
+/// The old doc claimed this was orthogonal to `Status` — a type deleted in the
+/// 10-06 rewrite, so the claim described a model that no longer existed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
@@ -32,18 +35,6 @@ impl fmt::Display for Source {
     }
 }
 
-impl std::str::FromStr for Source {
-    type Err = ();
-
-    fn from_str(s: &str) -> std::result::Result<Self, ()> {
-        match s {
-            "verified" => Ok(Source::Verified),
-            "user_supplied" => Ok(Source::UserSupplied),
-            _ => Err(()),
-        }
-    }
-}
-
 #[cfg(test)]
 mod source_tests {
     use super::*;
@@ -55,10 +46,15 @@ mod source_tests {
     }
 
     #[test]
-    fn deserializes_both_spellings() {
-        use std::str::FromStr;
-        assert_eq!(Source::from_str("verified"), Ok(Source::Verified));
-        assert_eq!(Source::from_str("user_supplied"), Ok(Source::UserSupplied));
-        assert!(Source::from_str("bogus").is_err());
+    fn deserializes_both_spellings_and_refuses_anything_else() {
+        for (s, want) in [
+            ("verified", Source::Verified),
+            ("user_supplied", Source::UserSupplied),
+        ] {
+            let got: Source = toml::Value::String(s.into()).try_into().unwrap();
+            assert_eq!(got, want);
+        }
+        let bad: Result<Source, _> = toml::Value::String("bogus".into()).try_into();
+        assert!(bad.is_err());
     }
 }

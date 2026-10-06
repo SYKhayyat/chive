@@ -139,7 +139,8 @@ Categories say what a file is. They don't decide whether it can be restored.
 
 ## The catalog
 
-The catalog is plain text (TOML). It lives off-box — committed to a repo, or on storage that survives the machine it describes. SQLite is a derived working index rebuilt from the TOML.
+The catalog is plain text (TOML) and it is the only store. It lives off-box —
+committed to a repo, or on storage that survives the machine it describes.
 
 ## Commands
 

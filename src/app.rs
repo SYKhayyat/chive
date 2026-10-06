@@ -2,14 +2,13 @@
 //! persistence operations that every command passes through.
 //!
 //! Commands do not touch files directly; they load a [`Catalog`], transform it,
-//! and save it via [`App::save_catalog`], which writes the TOML source of truth
-//! *and* rebuilds the derived SQLite index in one step. That keeps decision D9
-//! (TOML is the truth; SQLite is derived) enforced in a single place.
+//! and save it via [`App::save_catalog`]. That is the whole persistence path —
+//! the TOML *is* the store, so D9 ("the TOML is the truth") is enforced by there
+//! being nothing else to disagree with it.
 
 use std::path::Path;
 
 use crate::catalog::Catalog;
-use crate::catalog::db;
 use crate::catalog::toml;
 use crate::config::Config;
 use crate::error::{Error, Result};
@@ -62,17 +61,19 @@ impl App {
         Err(Error::MissingCatalog)
     }
 
-    /// Persist a catalog: write the TOML truth, then rebuild the derived index.
-    /// The index is rebuilt through a raw connection: `open`'s version gate
-    /// guards *readers*, and a writer must always be able to restamp the index
-    /// wholesale (a write that cannot start because the old index is versioned
-    /// wrong could never repair it).
+    /// Persist a catalog by writing the TOML truth. That is the whole operation.
+    ///
+    /// There used to be a second step: rebuild a SQLite index over the same rows.
+    /// It had no reader outside its own tests — `db::load` and the version gate
+    /// were called from nowhere else — so every save paid a wholesale table
+    /// rebuild for a store nothing read, and D9's own rationale ("fast queries
+    /// (status, restorable-set)") named queries that do not exist: both readers
+    /// filter `catalog.files()` in memory. Deleted, along with `rusqlite` and the
+    /// five hand-written `FromStr` impls on the domain model that existed only to
+    /// feed it. Shall has no index at 142k lines either (issue #10).
     pub fn save_catalog(&self, catalog: &Catalog) -> Result<()> {
         self.store.ensure()?;
-        let truth = self.store.default_catalog_file();
-        toml::write(catalog, &truth)?;
-        let mut conn = db::open_for_write(&self.store.db_file())?;
-        db::replace(&mut conn, catalog)
+        toml::write(catalog, &self.store.default_catalog_file())
     }
 
     /// Re-decide one path against the current evidence, and return the catalog
