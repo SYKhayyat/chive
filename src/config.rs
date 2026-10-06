@@ -12,6 +12,62 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::rules::{Rule, Rules};
 
+/// A commented `config.toml` carrying every setting at its default.
+///
+/// Every key is *commented out*, so writing this file changes nothing until you
+/// uncomment something — the same rule Shall's `preferences.toml` template
+/// follows (`src/verbs/setup.rs`, `CONFIG_TEMPLATE`): a template that sets values
+/// is a template that surprises someone. Each entry says what the setting does
+/// and, where the choice is not obvious, why the default is what it is.
+pub const CONFIG_TEMPLATE: &str = r#"# chive settings. Every key is optional — omit one to use its default.
+#
+# This file is written once by `chive config init` and nothing writes to it
+# afterwards but you. `chive config show` prints what chive is actually using.
+
+# Directories never scanned. Matched on the exact basename, so `.git` skips any
+# `.git` directory at any depth.
+ignore = [".git", ".svn", "node_modules", "target", "__pycache__", ".cache", "dist", "build", ".next", ".nuxt"]
+
+# ---------------------------------------------------------------------------
+# [policy] — the two judgement calls (D24, D25). Both default to the answer that
+# cannot lose your data, and both are three-level so the escape hatch is *named*
+# rather than implied by a boolean's absence.
+#
+# [policy.restore]
+# What `restore` does when the file it is about to write already exists.
+#   refuse    — never overwrite. The default, and D15 as written.
+#   backup    — copy the existing file to <dest>.chive-backup first, then replace.
+#   overwrite — replace without asking. The escape hatch.
+# overwrite = "refuse"
+#
+# [policy.catalog]
+# How far outside your home an imported catalog's root may point.
+#   home-only — refuse a root outside your home.
+#   warn      — accept it, and name it when you import. The default: a catalog
+#               written on another machine names *that* machine's root, so
+#               refusing outside-home would refuse the migration chive exists for.
+#   any       — accept anything, silently.
+# root_scope = "warn"
+
+# ---------------------------------------------------------------------------
+# [[rules]] — your verdict policy, in Rhai. A rule returns a verdict
+# ("restorable" / "unknown" / "disposable") or () for no opinion; the first rule
+# with an opinion wins, so order is the precedence.
+#
+# These replace a retired filename heuristic. Guessing from a filename is how
+# "chive cannot explain this" became "safe to delete"; a rule is a claim you make
+# about your machine rather than one chive makes about everyone's.
+#
+# Available facts: path, size, extension, is_symlink, link_resolves, package,
+# in_ignored_dir. The engine is sandboxed — no filesystem, no processes.
+#
+# [[rules]]
+# name = "installer packages are disposable"
+# script = '''
+#   if path.ends_with(".apk") { "disposable" } else { () }
+# '''
+"#;
+
 /// The directories never scanned. Matching is on the exact directory basename,
 /// so `.git` matches any `.git` dir at any depth. This is the default; the
 /// file overrides it wholesale.

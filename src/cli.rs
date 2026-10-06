@@ -110,6 +110,11 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Show or create the settings file.
+    Config {
+        #[command(subcommand)]
+        sub: ConfigCmd,
+    },
     /// Load a catalog TOML (from a file or the default location) into the store.
     Import {
         /// The catalog TOML to load. Defaults to the store's default location.
@@ -132,6 +137,21 @@ fn restore_sigpipe() {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
+}
+
+/// The `config` sub-actions.
+#[derive(Debug, Subcommand)]
+enum ConfigCmd {
+    /// Write a commented config.toml with every setting at its default.
+    Init {
+        /// Overwrite an existing config.toml. Without this it refuses: the file
+        /// is yours, and a settings file clobbered by a tool is a bug you debug
+        /// for an hour.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Print the settings chive is actually using, and where they came from.
+    Show,
 }
 
 /// The action to preview under `plan`.
@@ -217,6 +237,10 @@ pub fn run(argv: impl IntoIterator<Item = String>) -> Result<i32> {
         Command::Dispose { path } => cmd_dispose(&app, &path)?,
         Command::Withdraw { path } => cmd_withdraw(&app, &path)?,
         Command::Clean { dry_run, force } => cmd_clean(&app, dry_run, force)?,
+        Command::Config { sub } => match sub {
+            ConfigCmd::Init { force } => cmd_config_init(&app, force)?,
+            ConfigCmd::Show => cmd_config_show(&app)?,
+        },
         Command::Import { from } => cmd_import(&app, from)?,
         Command::Export { to } => cmd_export(&app, to)?,
     };
@@ -606,6 +630,64 @@ fn confirm(prompt_liter: &str) -> bool {
         .read_line(&mut line)
         .map(|_| line.trim().to_ascii_lowercase());
     matches!(read, Ok(ref s) if s == "y" || s == "yes")
+}
+
+fn cmd_config_init(app: &App, force: bool) -> Result<i32> {
+    let path = app.store.config_file();
+    if path.exists() && !force {
+        // Shall's rule: `config init` refuses to overwrite without `--force`
+        // (R17 — "export must never silently overwrite").
+        return Err(Error::Refused(format!(
+            "{} already exists; chive will not overwrite your settings (pass --force)",
+            path.display()
+        )));
+    }
+    app.store.ensure().map_err(Error::Io)?;
+    std::fs::write(&path, crate::config::CONFIG_TEMPLATE).map_err(Error::Io)?;
+    println!("wrote {}", path.display());
+    println!("every key is optional and commented out — uncomment one to change it");
+    println!("`chive config show` prints what chive is using");
+    Ok(0)
+}
+
+fn cmd_config_show(app: &App) -> Result<i32> {
+    let path = app.store.config_file();
+    let config = Config::load(&path)?;
+    println!("{}", path.display());
+    println!(
+        "  {}",
+        if path.exists() {
+            "read from the file below"
+        } else {
+            "not written yet — every setting is at its default (`chive config init`)"
+        }
+    );
+    println!();
+    println!("policy.restore.overwrite = {:?}", config.overwrite());
+    println!("   refuse    never write over an existing file (D15 as written)");
+    println!("   backup    copy it to <dest>.chive-backup, then replace it");
+    println!("   overwrite replace it without asking");
+    println!();
+    println!("policy.catalog.root_scope = {:?}", config.root_scope());
+    println!("   home-only refuse an imported root outside your home");
+    println!("   warn      accept it and name it on import (default)");
+    println!("   any       accept anything, silently");
+    println!();
+    println!("ignore: {} directories", config.ignore.len());
+    if config.rules.is_empty() {
+        println!("rules:  none — every unexplained file is a hole (`chive holes`)");
+    } else {
+        println!("rules:  {} configured", config.rules.len());
+        for (i, r) in config.rules.iter().enumerate() {
+            let label = if r.name.is_empty() {
+                format!("rule {i}")
+            } else {
+                r.name.clone()
+            };
+            println!("  - {label}");
+        }
+    }
+    Ok(0)
 }
 
 fn cmd_import(app: &App, from: Option<PathBuf>) -> Result<i32> {

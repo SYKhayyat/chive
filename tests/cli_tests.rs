@@ -321,6 +321,86 @@ fn status_filter_selects_by_verdict() {
 }
 
 #[test]
+fn config_show_reports_every_setting_and_its_default() {
+    // The settings have to be discoverable: a policy nobody can find is a policy
+    // nobody can change (the lamdan audit's region-1 finding).
+    let env = Env::new();
+    let out = env.chive().args(["config", "show"]).assert().success();
+    let s = String::from_utf8_lossy(&out.get_output().stdout);
+    for expected in [
+        "policy.restore.overwrite",
+        "Refuse",
+        "backup",
+        "policy.catalog.root_scope",
+        "Warn",
+        "home-only",
+        "ignore:",
+        "rules:",
+    ] {
+        assert!(
+            s.contains(expected),
+            "config show must mention {expected}:\n{s}"
+        );
+    }
+    assert!(
+        s.contains("not written yet"),
+        "with no file, say so rather than implying one was read: {s}"
+    );
+}
+
+#[test]
+fn config_init_writes_a_template_that_changes_nothing() {
+    let env = Env::new();
+    env.chive().args(["config", "init"]).assert().success();
+
+    let path = env.conf.join("config.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    // Every judgement call stays commented out, so writing the file cannot
+    // silently change behaviour -- the reason Shall's template does the same.
+    assert!(text.contains("# overwrite = \"refuse\""));
+    assert!(text.contains("# root_scope = \"warn\""));
+    for setting in ["overwrite", "root_scope"] {
+        let active = text
+            .lines()
+            .any(|l| !l.trim_start().starts_with('#') && l.contains(setting));
+        assert!(!active, "{setting} must not be set by the template");
+    }
+    assert!(
+        text.contains("[[rules]]"),
+        "the template shows the rule form"
+    );
+
+    // and chive still reads its defaults out of it
+    let out = env.chive().args(["config", "show"]).assert().success();
+    let s = String::from_utf8_lossy(&out.get_output().stdout);
+    assert!(s.contains("Refuse") && s.contains("Warn"), "{s}");
+}
+
+#[test]
+fn config_init_refuses_to_clobber_an_existing_file() {
+    let env = Env::new();
+    env.chive().args(["config", "init"]).assert().success();
+    let path = env.conf.join("config.toml");
+    std::fs::write(&path, "# mine\n").unwrap();
+
+    env.chive().args(["config", "init"]).assert().code(3);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "# mine\n",
+        "a refused init must not touch the file"
+    );
+    env.chive()
+        .args(["config", "init", "--force"])
+        .assert()
+        .success();
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("chive settings")
+    );
+}
+
+#[test]
 fn missing_catalog_errors_explicitly() {
     let env = Env::new();
     env.chive().arg("status").assert().code(4);
