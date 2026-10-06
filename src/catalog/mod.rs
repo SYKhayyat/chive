@@ -2,9 +2,10 @@ pub mod db;
 pub mod toml;
 
 use std::collections::BTreeMap;
-use std::path::Component;
+use std::path::{Component, Path};
 
 use crate::act::{self, Act, ActLog};
+use crate::config::RootScope;
 use crate::error::{Error, Result};
 use crate::model::FileEntry;
 
@@ -57,6 +58,153 @@ pub fn validate_path(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// The root a catalog claims, checked for the properties that make it usable as
+/// the anchor every containment check is relative to.
+///
+/// Two separate refusals, because they are two different things (D25). A root
+/// that is empty, relative, or `/` is a *malformed* catalog and no setting can
+/// make it acceptable — it would mean "every absolute path is inside the root".
+/// A root that is absolute but outside your home is a *judgement call*, and
+/// `RootScope` is where the owner answers it.
+pub fn validate_root(root: &str) -> Result<()> {
+    let refuse = |why: &str| {
+        Err(Error::Catalog(format!(
+            "catalog root {root:?} is not usable: {why}"
+        )))
+    };
+    if root.trim().is_empty() {
+        return refuse("the root is empty");
+    }
+    let p = Path::new(root);
+    if !p.is_absolute() {
+        return refuse(
+            "the root must be absolute, or a later command resolves it against whatever cwd it runs from",
+        );
+    }
+    // `/` as a root makes every absolute path "inside" it, which is exactly the
+    // claim containment exists to prevent.
+    if p.components().count() <= 1 {
+        return refuse("`/` contains everything, so nothing is inside the root");
+    }
+    Ok(())
+}
+
+/// Whether an absolute `root` may be accepted under `scope`, and what to say
+/// about it when it may (D25). Returns a note to print rather than swallowing the
+/// observation: the moment a root is announced is the only moment the owner can
+/// notice it is the wrong one.
+pub fn root_in_scope(root: &str, scope: RootScope) -> Result<Option<String>> {
+    if scope == RootScope::Any {
+        return Ok(None);
+    }
+    let Some(home) = home_dir() else {
+        return Ok(Some(format!(
+            "catalog root is {root:?}; HOME and USERPROFILE are unset, so chive cannot tell whether it is inside your home"
+        )));
+    };
+    // Normalise textually rather than canonicalising, because a catalog from
+    // another machine legitimately names a root that does not exist here, and a
+    // check that silently falls back to a lexical comparison when
+    // `canonicalize` fails is the check that let #47 through:
+    // `/home/u/../etc` starts with `/home/u` as a *spelling*.
+    if normalize_lexical(Path::new(root)).starts_with(normalize_lexical(&home)) {
+        return Ok(None);
+    }
+    match scope {
+        RootScope::Any | RootScope::Warn => Ok(Some(format!(
+            "catalog root is {root:?}, which is outside your home ({}); chive will write and delete only inside it",
+            home.display()
+        ))),
+        RootScope::HomeOnly => Err(Error::Refused(format!(
+            "catalog root {root:?} is outside your home ({}); a catalog from another machine may name a path you do not want cleaned. Scan it yourself, or set policy.catalog.root_scope",
+            home.display()
+        ))),
+    }
+}
+
+/// Join `rel` onto the root chive is about to act against, and prove the result
+/// is inside it.
+///
+/// The root is a parameter rather than `self.root` because restore runs against
+/// the *target* machine's `--root`, which on a fresh machine is not the root the
+/// catalog was written against. Checking against `self.root` would validate the
+/// wrong path and prove nothing about where the write lands (issue #48).
+pub fn resolve_under(root: &Path, rel: &str) -> Result<std::path::PathBuf> {
+    validate_path(rel)?;
+    let joined = root.join(rel);
+    // A path whose *parent* escapes is already caught by `validate_path`. What
+    // is left is a symlink somewhere along the way, so canonicalise the deepest
+    // existing ancestor and re-append the rest: the file itself may not exist
+    // yet (a restore creates it), but its parent must be real.
+    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut probe = joined.as_path();
+    let base = loop {
+        match probe.canonicalize() {
+            Ok(real) => break real,
+            Err(_) => match (probe.file_name(), probe.parent()) {
+                (Some(name), Some(parent)) => {
+                    tail.push(name);
+                    probe = parent;
+                }
+                _ => break probe.to_path_buf(),
+            },
+        }
+    };
+    let mut out = base;
+    for name in tail.iter().rev() {
+        out.push(name);
+    }
+    let root_real = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if !out.starts_with(&root_real) {
+        return Err(Error::Refused(format!(
+            "{rel:?} resolves to {}, which is outside the root {}",
+            out.display(),
+            root_real.display()
+        )));
+    }
+    Ok(out)
+}
+
+/// Resolve `.` and `..` in a path *textually`, leaving a leading `/` and any
+/// prefix before the first `..` that cannot be resolved.
+///
+/// Deliberately not `canonicalize`: this runs on paths from a catalog that
+/// describes a different machine, so the path usually does not exist here, and a
+/// filesystem-dependent answer would be both unavailable and racy.
+pub fn normalize_lexical(p: &Path) -> std::path::PathBuf {
+    let mut out: Vec<std::ffi::OsString> = Vec::new();
+    for comp in p.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Only a `..` that can consume a real segment is consumed; a
+                // leading one has nowhere to go and is kept, so the result stays
+                // absolute and the comparison cannot be satisfied by it.
+                match out.last() {
+                    Some(last) if last != ".." => {
+                        out.pop();
+                    }
+                    _ => out.push("..".into()),
+                }
+            }
+            other => out.push(other.as_os_str().to_os_string()),
+        }
+    }
+    let mut s = std::path::PathBuf::from("/");
+    for seg in out {
+        s.push(seg);
+    }
+    s
+}
+
+/// The user's home, or `None` when the environment does not say.
+pub fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
 /// A catalog: metadata, every recorded path, and the owner act log.
 ///
 /// The present state of a machine, addressed by path relative to the scan root
@@ -91,6 +239,7 @@ impl Catalog {
         files: Vec<FileEntry>,
         acts: ActLog,
     ) -> Result<Self> {
+        validate_root(&root)?;
         for e in &files {
             validate_path(&e.path)?;
         }
@@ -112,6 +261,19 @@ impl Catalog {
     /// The owner act log. Read by the scanner, appended to by the verbs.
     pub fn acts(&self) -> &ActLog {
         &self.acts
+    }
+
+    /// Resolve a catalog path to an absolute path under the root, refusing
+    /// anything that does not land there.
+    ///
+    /// The join is *fallible on purpose*. The previous shape -- `root.join(rel)`
+    /// filtered by a lexical `starts_with` -- failed open in two ways: it could
+    /// not notice that `root` itself was untrusted, and a string prefix says
+    /// nothing about a symlink under the root, which every later filesystem call
+    /// follows (issue #48). Canonicalising the parent and re-checking is what
+    /// makes the answer about the filesystem rather than about the spelling.
+    pub fn resolve(&self, rel: &str) -> Result<std::path::PathBuf> {
+        resolve_under(Path::new(&self.root), rel)
     }
 
     /// Record an owner act, stamping it with the next sequence number.
@@ -159,10 +321,6 @@ mod catalog_tests {
     use crate::act::ActLog;
     use crate::model::{Category, Origin, Source, Verdict};
 
-    fn entry(path: &str) -> FileEntry {
-        FileEntry::new_unknown(path.into(), Some(Category::Document), 1, None)
-    }
-
     fn cat(root: &str, files: Vec<FileEntry>) -> Result<Catalog> {
         Catalog::new(
             root.into(),
@@ -171,6 +329,10 @@ mod catalog_tests {
             files,
             ActLog::default(),
         )
+    }
+
+    fn entry(path: &str) -> FileEntry {
+        FileEntry::new_unknown(path.into(), Some(Category::Document), 1, None)
     }
 
     #[test]
@@ -277,6 +439,72 @@ mod catalog_tests {
         assert_eq!(recorded.seq, 0);
         assert_eq!(c.acts().len(), 1);
         assert_eq!(c.acts().next_seq(), 1);
+    }
+
+    #[test]
+    fn a_root_that_is_empty_relative_or_slash_is_refused() {
+        // D25's unconditional half: no setting can make `/` an acceptable root,
+        // because it would make every absolute path "inside" the root.
+        for bad in ["", "   ", ".", "relative/path", "/"] {
+            assert!(validate_root(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn an_ordinary_absolute_root_is_accepted() {
+        assert!(validate_root("/home/u").is_ok());
+        assert!(validate_root("/").is_err());
+        assert!(validate_root("/etc").is_ok());
+    }
+
+    #[test]
+    fn a_root_outside_home_is_refused_by_default_and_allowed_on_request() {
+        let home = home_dir().expect("a home dir");
+        let base = tempfile::tempdir().unwrap();
+        let outside = base.path().join("elsewhere").to_string_lossy().to_string();
+        assert!(root_in_scope(&outside, RootScope::HomeOnly).is_err());
+        // A `..` spelling must not buy a pass: `/home/u/../etc` starts with
+        // `/home/u` lexically, which is the check that let #47 through.
+        let dotted = format!("{}/../etc", home.display());
+        assert!(
+            root_in_scope(&dotted, RootScope::HomeOnly).is_err(),
+            "`..` must not buy a pass, even though the path does not exist here"
+        );
+        assert!(
+            root_in_scope(&home.to_string_lossy(), RootScope::HomeOnly).is_ok(),
+            "the home itself is in scope"
+        );
+        assert!(root_in_scope(&outside, RootScope::Warn).is_ok());
+        assert!(root_in_scope(&outside, RootScope::Any).is_ok());
+        let inside = home.join("Documents").to_string_lossy().to_string();
+        assert!(root_in_scope(&inside, RootScope::HomeOnly).is_ok());
+        assert_eq!(
+            root_in_scope(&inside, RootScope::Warn).unwrap(),
+            None,
+            "a root inside home needs no announcement"
+        );
+    }
+
+    #[test]
+    fn resolve_refuses_a_path_that_escapes_through_a_symlink() {
+        // Issue #48: `starts_with` is a spelling check and cannot see a symlink.
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("root");
+        let outside = base.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("victim.txt"), "x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+        let c = cat(root.to_str().unwrap(), vec![]).unwrap();
+        let escaped = c.resolve("link/victim.txt");
+        #[cfg(unix)]
+        assert!(
+            escaped.is_err(),
+            "a symlinked directory must not carry a path out of the root"
+        );
+        assert!(c.resolve("inside.txt").is_ok());
     }
 
     #[test]

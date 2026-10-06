@@ -249,7 +249,12 @@ impl Runner for Mock {
     }
 
     fn ensure_parent_dir(&self, path: &Path) -> bool {
-        self.record(format!("mkdir {}", path.display()));
+        // Record what `Real` actually does. It recorded the *file* path, so the
+        // mock described a different operation from the one the real runner
+        // performs, and the test asserting on that string proved nothing about
+        // parent creation.
+        let shown = path.parent().unwrap_or(path);
+        self.record(format!("mkdir -p {}", shown.display()));
         true
     }
 }

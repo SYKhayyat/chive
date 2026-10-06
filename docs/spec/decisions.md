@@ -172,3 +172,33 @@ Every open question lives here with a status. Do not answer an open question in 
   ```
 
   `stats` keeps its counts but leads with the hole count and moves percentages below. `status` remains the flat by-verdict listing.
+
+### D24 — How much may `restore` overwrite (owner ruling 10-06)
+
+- **Status**: ruled
+- **Why**: The lamdan audit (2026-10-06) found that D15's no-clobber guarantee is a substring test: `build_plan` computes `dest` only when the recipe literally contains `{dest}`, so no git-tracked file is ever protected. Verified — `restore` on a dotfiles repo destroyed a local edit and reported `restored:`, exit 0. The deferred half of issue #21 asked whether *package* recipes may overwrite a present dest; it was never decided, and the audit found the answer was the wrong way round: a git recipe places the file at exactly `root + path`, so it is not exempt at all.
+- **Sibling precedent (Shall).** Shall's rule is `is_deployed_shim` (`src/app/shim_manager.rs:90`): overwrite only what you can prove is yours — a redeploy of Shall's own shim proceeds, an unmanaged same-named file is refused. Its `copy_over` additionally removes the old entry before making the new one, and `config init` / `module create` / `export` all refuse without `--force`. So the answer is *refuse*, with a named escape hatch — never a silent overwrite.
+- **Ruling**: three levels, in `config.toml`, safe by default:
+
+  | `restore.overwrite` | Meaning |
+  |---------------------|---------|
+  | `refuse` (default) | An existing `{dest}` is never written. D15 as written. |
+  | `backup` | The existing file is copied to `<dest>.chive-backup` first, then replaced. Shall's `copy_over` shape. |
+  | `overwrite` | Replace without asking. The escape hatch, written where the decision lives (Shall's `ExecTrust::Warn`). |
+
+  This applies to **every** entry, not only `{dest}`-bearing recipes — a package recipe's dest is still `root + path`. The setting changes what happens *after* chive knows a file is there; it never removes the knowledge.
+
+### D25 — How much is an imported catalog's root trusted (owner ruling 10-06)
+
+- **Status**: ruled
+- **Why**: The audit found `Catalog.root` is stored verbatim and never validated, while every containment check is relative to it. Verified — a catalog with `root = "/tmp/elsewhere"` imports, then `clean --force` deletes that file, exit 0. `root = "/"` is accepted. The entry-path traversal rules are sound and constrain the *relative* part; the absolute anchor is unchecked, and the doc comment describing the relative rule reads as though the whole path were covered.
+- **Sibling precedent (Shall).** Shall asks this question of data it did not author with `ExecTrust` (`src/config/config.rs:520`): `owner-only` / `not-world-writable` (default) / `warn`, where the escape hatch is "written where the decision lives." Shall also gates untrusted paths with `safe_relative` (`src/model/vendor.rs:153`), which drops `..`, roots, and drive prefixes outright.
+- **Ruling**: two parts, and the split is the point.
+  - **Unconditional, no setting**: an empty, relative, or `/` root is refused at `Catalog::new` (exit 3, `Error::Refused`). No configuration turns this off — it is a malformed catalog, not a judgement call. This is `safe_relative`'s half.
+  - **Judgement call, in `config.toml`**: whether an imported catalog may name a root outside your own home.
+
+  | `catalog.root_scope` | Meaning |
+  |----------------------|---------|
+  | `home-only` (default) | An imported root must live inside the current user's home. Otherwise refuse. |
+  | `warn` | Accept any absolute root, naming it loudly on import. For a deliberate `chive scan /etc`. |
+  | `any` | Accept anything. |

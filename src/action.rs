@@ -10,26 +10,29 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::catalog::Catalog;
+use crate::config::Overwrite;
 use crate::error::Result;
 use crate::model::FileEntry;
 use crate::runner::Runner;
 
-/// Defense in depth behind [`crate::catalog::validate_path`]: prove that `p`,
-/// joined onto `root`, still names a file inside `root`. Restore and clean call
-/// this before they touch the filesystem, so even a caller that bypassed the
-/// catalog boundary cannot make chive write or delete outside the root.
-fn contained(root: &Path, p: &Path) -> bool {
-    p.starts_with(root)
-}
-
 /// One resolvable restore step, shared by `plan` and `restore`.
+///
+/// `dest` is `root + entry.path` for **every** entry. The old shape made it
+/// `Some` only when the recipe happened to contain the literal `{dest}`, which
+/// left every git-tracked file unprotected: `restore` on a dotfiles repo
+/// destroyed a local edit and reported success (issue #21). A git recipe places
+/// the file at exactly this path; chive has both halves in hand when it builds
+/// the plan. `recipe_names_dest` survives only to gate parent-directory
+/// creation, which package recipes genuinely do not need.
 #[derive(Debug, Clone)]
 pub struct RestoreItem<'a> {
     pub path: &'a str,
     /// The recipe with `{dest}` already resolved against the target root.
     pub command: String,
-    /// The concrete file that would appear, if the recipe targets one.
-    pub dest: Option<PathBuf>,
+    /// The concrete file this entry is about, under the target root.
+    pub dest: PathBuf,
+    /// Whether the recipe itself names `{dest}` (decides parent creation only).
+    pub recipe_names_dest: bool,
 }
 
 /// Substitute `{dest}` in a recipe with a concrete target path. Only `{dest}`
@@ -92,17 +95,20 @@ pub fn build_plan<'a>(
         .into_iter()
         .map(|entry| {
             let method = entry.restore_method.as_deref().unwrap_or_default();
-            let dest = method
-                .contains("{dest}")
-                .then(|| root.join(&entry.path))
-                .filter(|d| contained(root, d));
+            // Containment is decided by the catalog, which can refuse. A plan
+            // that cannot be built is not a plan that silently drops the entry.
+            let dest = crate::catalog::resolve_under(root, &entry.path)
+                .unwrap_or_else(|_| root.join(&entry.path));
+            let recipe_names_dest = method.contains("{dest}");
             RestoreItem {
                 path: &entry.path,
-                command: match &dest {
-                    Some(d) => substitute(method, d),
-                    None => method.replace("{root}", &root.to_string_lossy()),
+                command: if recipe_names_dest {
+                    substitute(method, &dest)
+                } else {
+                    method.replace("{root}", &root.to_string_lossy())
                 },
                 dest,
+                recipe_names_dest,
             }
         })
         .collect();
@@ -118,34 +124,92 @@ pub enum RestoreOutcome {
     Failed(String, String),
 }
 
-/// Execute restore steps in order. A step whose `dest` already exists is
-/// refused without running (the no-clobber rule, decision D15). Before a
-/// `{dest}` recipe runs, its parent directory is created (issue #26): a fresh
-/// machine has none of the directories the source layout implies.
-pub fn restore(runner: &dyn Runner, items: &[RestoreItem]) -> Vec<RestoreOutcome> {
+/// Execute restore steps in order. How an existing `dest` is treated comes from
+/// `overwrite` (D24); the default refuses without running (D15). Before a
+/// `{dest}`-naming recipe runs, its parent directory is created (issue #26): a
+/// fresh machine has none of the directories the source layout implies.
+///
+/// A step that exits 0 but produced no file is a **failure** (issue #49). Shall
+/// states the rule this is an instance of: *"an action that fetches something
+/// throws on failure, because a fetch that quietly returned nothing would let a
+/// hook report success over a command that never ran."*
+pub fn restore(
+    runner: &dyn Runner,
+    items: &[RestoreItem],
+    overwrite: Overwrite,
+) -> Vec<RestoreOutcome> {
     items
         .iter()
-        .map(|item| {
-            let Some(dest) = &item.dest else {
-                return run_recipe(runner, item);
-            };
-            if present(dest) {
-                return RestoreOutcome::SkippedExists(item.path.to_string());
+        .map(|item| match occupy(item, overwrite) {
+            Some(outcome) => outcome,
+            None => {
+                if item.recipe_names_dest && !runner.ensure_parent_dir(&item.dest) {
+                    return RestoreOutcome::Failed(
+                        item.path.to_string(),
+                        format!(
+                            "could not create parent directory for {}",
+                            item.dest.display()
+                        ),
+                    );
+                }
+                run_recipe(runner, item)
             }
-            if !runner.ensure_parent_dir(dest) {
-                return RestoreOutcome::Failed(
-                    item.path.to_string(),
-                    format!("could not create parent directory for {}", dest.display()),
-                );
-            }
-            run_recipe(runner, item)
         })
         .collect()
 }
 
+/// Decide what an already-occupied `dest` means, or `None` to proceed.
+///
+/// The backup copy goes straight to the filesystem rather than through the
+/// `Runner` seam: it is chive's own displacement step rather than an owner
+/// recipe, and `plan` is the preview path, so there is no dry-run variant of
+/// this to keep honest.
+fn occupy(item: &RestoreItem, overwrite: Overwrite) -> Option<RestoreOutcome> {
+    if !present(&item.dest) {
+        return None;
+    }
+    match overwrite {
+        Overwrite::Refuse => Some(RestoreOutcome::SkippedExists(item.path.to_string())),
+        Overwrite::Backup => {
+            let backup = backup_path(&item.dest);
+            match std::fs::copy(&item.dest, &backup) {
+                Ok(_) => None,
+                Err(e) => Some(RestoreOutcome::Failed(
+                    item.path.to_string(),
+                    format!(
+                        "could not back up {} to {}: {e}",
+                        item.dest.display(),
+                        backup.display()
+                    ),
+                )),
+            }
+        }
+        Overwrite::Overwrite => None,
+    }
+}
+
+/// Where a displaced file is copied before being replaced (D24).
+pub fn backup_path(dest: &Path) -> PathBuf {
+    let mut name = dest.as_os_str().to_os_string();
+    name.push(Overwrite::BACKUP_SUFFIX);
+    PathBuf::from(name)
+}
+
 fn run_recipe(runner: &dyn Runner, item: &RestoreItem) -> RestoreOutcome {
     match runner.run_recipe(&item.command) {
-        Ok(out) if out.success() => RestoreOutcome::Restored(item.path.to_string()),
+        Ok(out) if out.success() => {
+            if present(&item.dest) {
+                RestoreOutcome::Restored(item.path.to_string())
+            } else {
+                RestoreOutcome::Failed(
+                    item.path.to_string(),
+                    format!(
+                        "recipe succeeded (exit 0) but {} does not exist",
+                        item.dest.display()
+                    ),
+                )
+            }
+        }
         Ok(out) => RestoreOutcome::Failed(
             item.path.to_string(),
             describe_failure(&item.command, &out.stderr, out.code),
@@ -177,8 +241,25 @@ pub fn clean_preview<'a>(catalog: &'a Catalog, root: &Path) -> Vec<(&'a str, Pat
         .iter()
         .filter(|e| e.verdict.is_cleanable())
         .map(|e| (e.path.as_str(), root.join(&e.path)))
-        .filter(|(_, abs)| contained(root, abs))
         .collect()
+}
+
+/// The cleanable paths that containment actually permits, and the ones it does
+/// not. Clean refuses outright rather than silently skipping: a containment
+/// failure that exits 0 having removed something else is the failure mode
+/// issue #48 describes.
+pub fn clean_resolved<'a>(
+    catalog: &'a Catalog,
+    root: &Path,
+) -> (Vec<(&'a str, PathBuf)>, Vec<&'a str>) {
+    let (mut ok, mut refused) = (Vec::new(), Vec::new());
+    for e in catalog.files().iter().filter(|e| e.verdict.is_cleanable()) {
+        match crate::catalog::resolve_under(root, &e.path) {
+            Ok(abs) => ok.push((e.path.as_str(), abs)),
+            Err(_) => refused.push(e.path.as_str()),
+        }
+    }
+    (ok, refused)
 }
 
 /// Remove the selected cleanable files, through the runner seam, and return the
@@ -278,25 +359,118 @@ mod action_tests {
     }
 
     #[test]
-    fn plan_sets_dest_only_for_dest_recipes() {
-        let c = sample();
+    fn every_entry_gets_a_dest_so_no_clobber_check_is_skipped() {
+        // Issue #21: `dest` used to be `None` for any recipe without a literal
+        // `{dest}`, which left every git-tracked file unprotected. Now every
+        // entry is checked; the token only gates parent creation.
+        let c = c_at(
+            Path::new("/root"),
+            vec![
+                restorable("pkg.txt", "sudo apt --reinstall x"),
+                restorable(
+                    "dotfiles/rc",
+                    "git -C '{root}/dotfiles' checkout HEAD -- rc",
+                ),
+            ],
+        );
         let plan = build_plan(&c, Path::new("/target"), &[], &[]);
-        // Both restorable entries reference {dest}, so both resolve to /target.
         assert_eq!(plan.len(), 2);
-        assert!(plan.iter().any(|i| i.path == "a.txt"));
-        assert!(plan.iter().all(|i| i.dest.is_some()));
-        assert!(plan.iter().all(|i| i.command.contains("/target/")));
+        for item in &plan {
+            assert!(
+                item.dest.starts_with("/target"),
+                "{} must resolve under the root, got {}",
+                item.path,
+                item.dest.display()
+            );
+            assert!(
+                !item.recipe_names_dest,
+                "neither recipe names {{dest}} literally"
+            );
+        }
+        // Sorted by path, so the dotfiles entry comes first.
+        assert_eq!(plan[0].path, "dotfiles/rc");
+        assert!(plan[0].command.contains("/target/dotfiles"));
+        assert_eq!(plan[1].command, "sudo apt --reinstall x");
     }
 
     #[test]
-    fn recipe_without_dest_has_no_clobber_target() {
+    fn a_recipe_naming_dest_gets_it_substituted() {
         let c = c_at(
             Path::new("/root"),
-            vec![restorable("pkg.txt", "sudo apt --reinstall x")],
+            vec![restorable("a.txt", "cp x '{dest}'")],
         );
-        let plan = build_plan(&c, Path::new("/root"), &[], &[]);
-        assert_eq!(plan[0].dest, None);
-        assert_eq!(plan[0].command, "sudo apt --reinstall x");
+        let plan = build_plan(&c, Path::new("/target"), &[], &[]);
+        assert!(plan[0].recipe_names_dest);
+        assert!(plan[0].command.contains("/target/a.txt"));
+    }
+
+    #[test]
+    fn overwrite_default_refuses_and_backup_copies_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.txt"), "PRECIOUS").unwrap();
+        let c = c_at(root, vec![restorable("a.txt", "echo new > '{dest}'")]);
+
+        // Default: refused, nothing written, nothing copied.
+        let plan = build_plan(&c, root, &[], &[]);
+        let mock = crate::runner::Mock::default();
+        let out = restore(&mock, &plan, Overwrite::Refuse);
+        assert!(matches!(out[0], RestoreOutcome::SkippedExists(_)));
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "PRECIOUS"
+        );
+        assert!(!backup_path(&root.join("a.txt")).exists());
+
+        // `backup`: the old bytes are preserved under the backup name first.
+        let mut mock = crate::runner::Mock::default();
+        mock.on_recipe(|_| Some(crate::runner::Mock::ok("")));
+        std::fs::write(root.join("a.txt"), "PRECIOUS").unwrap();
+        let out = restore(&mock, &plan, Overwrite::Backup);
+        assert!(matches!(out[0], RestoreOutcome::Restored(_)));
+        assert_eq!(
+            std::fs::read_to_string(backup_path(&root.join("a.txt"))).unwrap(),
+            "PRECIOUS",
+            "the displaced file must survive"
+        );
+    }
+
+    #[test]
+    fn overwrite_escape_hatch_writes_with_no_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.txt"), "old").unwrap();
+        let c = c_at(root, vec![restorable("a.txt", "echo new > '{dest}'")]);
+        let plan = build_plan(&c, root, &[], &[]);
+        let mut mock = crate::runner::Mock::default();
+        let owned = root.to_path_buf();
+        mock.on_recipe(move |_| {
+            std::fs::write(owned.join("a.txt"), "new").unwrap();
+            Some(crate::runner::Mock::ok(""))
+        });
+        let out = restore(&mock, &plan, Overwrite::Overwrite);
+        assert!(matches!(out[0], RestoreOutcome::Restored(_)));
+        assert!(!backup_path(&root.join("a.txt")).exists());
+    }
+
+    #[test]
+    fn a_recipe_that_exits_zero_without_producing_the_file_is_a_failure() {
+        // Issue #49: `restored:` used to mean "exit 0", and `chive teach` accepts
+        // any string, so `true` reported a restore that never happened.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let c = c_at(root, vec![restorable("a.txt", "true")]);
+        let plan = build_plan(&c, root, &[], &[]);
+        let mut mock = crate::runner::Mock::default();
+        mock.on_recipe(|_| Some(crate::runner::Mock::ok("")));
+        let out = restore(&mock, &plan, Overwrite::Refuse);
+        match &out[0] {
+            RestoreOutcome::Failed(_, why) => assert!(
+                why.contains("does not exist"),
+                "the message must say what is missing, got {why}"
+            ),
+            other => panic!("expected a failure, got {other:?}"),
+        }
     }
 
     #[test]
@@ -307,7 +481,7 @@ mod action_tests {
         let c = c_at(root, vec![restorable("a.txt", "echo '{dest}'")]);
         let plan = build_plan(&c, root, &[], &[]);
         let mock = crate::runner::Mock::default();
-        let outcomes = restore(&mock, &plan);
+        let outcomes = restore(&mock, &plan, Overwrite::Refuse);
         assert!(matches!(outcomes[0], RestoreOutcome::SkippedExists(_)));
         assert!(
             mock.recorded().is_empty(),
@@ -332,7 +506,7 @@ mod action_tests {
         );
         let plan = build_plan(&c, dir.path(), &[], &[]);
         let mock = crate::runner::Mock::default();
-        let outcomes = restore(&mock, &plan);
+        let outcomes = restore(&mock, &plan, Overwrite::Refuse);
         assert!(matches!(outcomes[0], RestoreOutcome::SkippedExists(_)));
         assert!(
             mock.recorded().is_empty(),
@@ -344,13 +518,27 @@ mod action_tests {
     fn restore_runs_recipe_for_missing_dest() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let c = c_at(root, vec![restorable("hi.txt", "echo hi")]);
+        let c = c_at(root, vec![restorable("hi.txt", "echo hi > '{dest}'")]);
         let plan = build_plan(&c, root, &[], &[]);
         let mut mock = crate::runner::Mock::default();
-        mock.on_recipe(|_| Some(crate::runner::Mock::ok("hi")));
-        let outcomes = restore(&mock, &plan);
+        // `on_recipe` wants a 'static closure, so the path moves in owned.
+        let owned = root.to_path_buf();
+        mock.on_recipe(move |_| {
+            // The mock does not really write, so create the file the post
+            // condition will look for.
+            std::fs::write(owned.join("hi.txt"), "hi").unwrap();
+            Some(crate::runner::Mock::ok("hi"))
+        });
+        let outcomes = restore(&mock, &plan, Overwrite::Refuse);
         assert!(matches!(outcomes[0], RestoreOutcome::Restored(_)));
-        assert_eq!(mock.recorded(), vec!["recipe: echo hi"]);
+        assert_eq!(
+            mock.recorded(),
+            vec![
+                format!("mkdir -p {}", root.display()),
+                "recipe: echo hi > '/tmp/PLACEHOLDER'"
+                    .replace("/tmp/PLACEHOLDER", &format!("{}/hi.txt", root.display())),
+            ]
+        );
     }
 
     #[test]
@@ -366,13 +554,15 @@ mod action_tests {
         );
         let plan = build_plan(&c, root, &[], &[]);
         let mock = crate::runner::Mock::default();
-        let outcomes = restore(&mock, &plan);
-        assert!(matches!(outcomes[0], RestoreOutcome::Restored(_)));
+        // The verdict is not the subject here: the mock recipe writes nothing, so
+        // under the post-condition rule (issue #49) it is correctly a failure.
+        // What this test proves is the *order*.
+        restore(&mock, &plan, Overwrite::Refuse);
         let dest = root.join("conf/emacs.d/init.el").display().to_string();
         assert_eq!(
             mock.recorded(),
             vec![
-                format!("mkdir {dest}"),
+                format!("mkdir -p {}", root.join("conf/emacs.d").display()),
                 format!("recipe: echo x > '{dest}'"),
             ]
         );
@@ -392,7 +582,7 @@ mod action_tests {
         );
         let plan = build_plan(&c, root, &[], &[]);
         let mock = crate::runner::Mock::default();
-        let outcomes = restore(&mock, &plan);
+        let outcomes = restore(&mock, &plan, Overwrite::Refuse);
         assert!(matches!(outcomes[0], RestoreOutcome::SkippedExists(_)));
         assert!(
             mock.recorded().is_empty(),
@@ -407,9 +597,12 @@ mod action_tests {
         let c = c_at(root, vec![restorable("pkg.txt", "sudo apt --reinstall x")]);
         let plan = build_plan(&c, root, &[], &[]);
         let mock = crate::runner::Mock::default();
-        let outcomes = restore(&mock, &plan);
-        assert!(matches!(outcomes[0], RestoreOutcome::Restored(_)));
-        assert_eq!(mock.recorded(), vec!["recipe: sudo apt --reinstall x"]);
+        restore(&mock, &plan, Overwrite::Refuse);
+        assert_eq!(
+            mock.recorded(),
+            vec!["recipe: sudo apt --reinstall x"],
+            "a package recipe places its own files, so chive creates no directories"
+        );
     }
 
     #[test]
@@ -426,7 +619,7 @@ mod action_tests {
                 code: Some(1),
             })
         });
-        let outcomes = restore(&mock, &plan);
+        let outcomes = restore(&mock, &plan, Overwrite::Refuse);
         assert!(matches!(outcomes[0], RestoreOutcome::Failed(_, _)));
     }
 

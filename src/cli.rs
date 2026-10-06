@@ -10,7 +10,8 @@ use crate::act::Act;
 use crate::action;
 use crate::app::App;
 use crate::catalog::Catalog;
-use crate::error::Result;
+use crate::config::Config;
+use crate::error::{Error, Result};
 use crate::model::{FileEntry, Origin, Source, Verdict};
 use crate::store::Store;
 
@@ -429,10 +430,7 @@ fn cmd_plan(app: &App, root: Option<PathBuf>, paths: &[String], exclude: &[Strin
     println!("Plan: {} file(s) to restore", plan.len());
     for item in &plan {
         println!("\n  {}", item.command);
-        match &item.dest {
-            Some(d) => println!("  -> {}", d.display()),
-            None => println!("  -> (placed by the recipe / package manager)"),
-        }
+        println!("  -> {}", item.dest.display());
     }
     Ok(0)
 }
@@ -445,8 +443,13 @@ fn cmd_restore(
 ) -> Result<i32> {
     let catalog = app.load_catalog()?;
     let root = root.unwrap_or_else(|| PathBuf::from(&catalog.root));
+    let config = Config::load(&app.store.config_file())?;
     let plan = action::build_plan(&catalog, &root, paths, exclude);
-    let outcomes = action::restore(app.runner() as &dyn crate::runner::Runner, &plan);
+    let outcomes = action::restore(
+        app.runner() as &dyn crate::runner::Runner,
+        &plan,
+        config.overwrite(),
+    );
     for o in &outcomes {
         match o {
             action::RestoreOutcome::Restored(p) => println!("restored: {p}"),
@@ -554,15 +557,32 @@ fn cmd_withdraw(app: &App, path: &str) -> Result<i32> {
 fn cmd_clean(app: &App, dry_run: bool, force: bool) -> Result<i32> {
     let mut catalog = app.load_catalog()?;
     let root = PathBuf::from(&catalog.root);
+    let (rows, refused) = action::clean_resolved(&catalog, &root);
+    if !refused.is_empty() {
+        // Refuse rather than skip. A containment failure that silently drops
+        // entries, or worse removes something else and exits 0, is the failure
+        // mode issue #48 describes (issue #48).
+        eprintln!(
+            "refused {} path(s) that resolve outside the scan root:",
+            refused.len()
+        );
+        for rel in &refused {
+            eprintln!("  {rel}");
+        }
+        return Err(Error::Refused(format!(
+            "{} path(s) resolve outside {}; nothing was removed",
+            refused.len(),
+            root.display()
+        )));
+    }
     if dry_run {
-        let rows = action::clean_preview(&catalog, &root);
         println!("Would remove {} file(s):", rows.len());
         for (rel, _) in rows {
             println!("  {rel}");
         }
         return Ok(0);
     }
-    let expected = action::clean_preview(&catalog, &root).len();
+    let expected = rows.len();
     if !force && !confirm(&format!("Remove {expected} file(s)? [y/N] ")) {
         println!("nothing removed");
         return Ok(0);
@@ -591,6 +611,14 @@ fn confirm(prompt_liter: &str) -> bool {
 fn cmd_import(app: &App, from: Option<PathBuf>) -> Result<i32> {
     let path = from.unwrap_or_else(|| app.store.default_catalog_file());
     let catalog = crate::catalog::toml::read(&path)?;
+    // D25: a root outside your home is the owner's judgement call, so it is
+    // answered in config rather than assumed. `home-only` (the default) refuses
+    // -- a catalog from another machine may name a path you would not want
+    // `clean` to delete.
+    let config = Config::load(&app.store.config_file())?;
+    if let Some(note) = crate::catalog::root_in_scope(&catalog.root, config.root_scope())? {
+        eprintln!("note: {note}");
+    }
     app.save_catalog(&catalog)?;
     // The act log arrives with the catalog: these are the owner's decisions from
     // the machine the archive came from, and a verdict kept in config would have
