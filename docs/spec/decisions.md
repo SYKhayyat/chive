@@ -6,14 +6,14 @@ Every open question lives here with a status. Do not answer an open question in 
 
 | ID | Question | Status | Notes |
 |----|----------|--------|-------|
-| D1 | Implementation language — Rust or Common Lisp | **open** | Shall proves Rust can deliver the needed flexibility. But CL has genuine REPL advantages. Owner to decide. |
+| D1 | Implementation language — Rust or Common Lisp | **open** | Rust is the reality on disk (7k lines, `Cargo.toml`, musl-static integration targets), so this is a register question rather than a build question. Recorded against #8. CL's REPL advantage is real but is the only thing CL still buys; the code has no use for it. |
 | D2 | Restore manager: call restore periodically or when N files go missing | **open** | Non-goal for MVP. The catalog data model does not preclude a manager later. |
 | D3 | What counts as "absent" on a target machine | **open** | MVP: restore operates on named files or all restorable. Absence detection is D2 territory. |
 | D4 | Where the off-box catalog lives | **open** | MVP: user brings their own git/storage. chive produces the TOML. |
 | D5 | Cross-platform recipes: per-OS variants or one portable form | **open** | MVP: one recipe string per file. Per-OS variants can be added later. |
 | D7 | Category taxonomy: extension lists vs MIME-type detection | **open** | MVP: extension lists. MIME can be added without changing the catalog format. |
 | D12 | GUI framework: Tauri vs egui/iced | **open** | MVP: CLI only. GUI is phase 2. |
-| D13 | Project license | **open** | Not blocking the build. |
+| D13 | Project license | **ruled 10-06: MIT** | Was open; `Cargo.toml` said MIT while `README.md` and `docs/SUMMARY.md` said all-rights-reserved and no LICENSE file existed. MIT wins because it is the only value a machine reads. LICENSE file added. |
 
 ## Ruled decisions
 
@@ -62,9 +62,10 @@ Every open question lives here with a status. Do not answer an open question in 
 
 ### D14 — Status assignment: orphaned vs not-restorable
 
-- **Status**: ruled
+- **Status**: superseded by D19
 - **Why**: Without this split, `clean` is either too aggressive or too conservative. Separating them makes `clean` safe by default.
 - **Ruling**: `orphaned` is the automatic default for files with no provenance. `not-restorable` is only assigned by explicit owner action (`chive protect`). Clean removes orphaned; clean never touches not-restorable.
+- **Superseded because**: the split was answering a question chive should never have been asked. See D19.
 
 ### D15 — Restore never clobbers
 
@@ -74,14 +75,99 @@ Every open question lives here with a status. Do not answer an open question in 
 
 ### D16 — Taught recipes overrule inference
 
-- **Status**: ruled
+- **Status**: ruled, amended by D20
 - **Why**: The owner's explicit recipe is stronger evidence of intent than any automatic provenance detection. Teaching is a statement of *how to rebuild this file*; a scan-time inference is only a guess. Rules 2–4 of the scan order (temporary blob, provenance, orphaned) are all guesses about a file chive has not been told about.
 - **Ruling**: A user-taught recipe (`recipes.toml`, via `chive teach`) wins over every automatic classification for that path. Teaching works on a file in any of the four statuses and always promotes it to `restorable`, source `user_supplied`. `chive mark --status <not-restorable|temporary|orphaned>` is the unified verb for explicit status changes, folding the original `protect` command; marking clears a recipe.
+- **Amended by**: D20 removes "every automatic classification" — an owner verdict and an owner recipe are two entries in one ordered log, so the later one governs rather than one class outranking another.
 
 ### D17 — The existing code is provisional
 
 - **Status**: ruled
 - **Why**: The implementation was scaffolded before the product's purpose was settled, and it encodes a model the purpose no longer supports: four statuses designed around `clean`, a flat catalog with no hierarchy, and a `mark` verb that does not survive a rescan. Treating that code as a contract would preserve the mistakes; treating it as untouchable would make the correct fixes (#38, #41, #43) strictly harder than the wrong ones. A rewrite that keeps reverse-engineering intent from provisional code is not a rewrite.
-- **Ruling**: Every line of `src/` is a **suggestion, not a contract**, and an AI working here should not be afraid to change it drastically. The status model and its names, the CLI surface and its flags, the catalog TOML and SQLite schemas, the store layout, the module structure and the provenance/scan internals may be rewritten, deleted, or replaced from scratch without asking. A large honest rewrite that lands the purpose is the preferred outcome over a small safe patch that preserves the wrong model. Specifically not wanted: minimal additive or defensive changes made out of a fear of breaking things, preserved signatures and schema shapes because something already depends on them, tests that pin behaviour nobody ruled on, and fixes contorted to fit the existing architecture rather than reshaping the architecture to fit the fix.
+- **Ruling**: Every line of `src/` is a **suggestion, not a contract**, and an AI working here should not be afraid to change it drastically. The status model and its names, the CLI surface and its flags, the catalog TOML and SQLite schemas, the store layout, the module structure and the provenance/scan internals may be rewritten, deleted, or replaced from scratch without asking. A large honest rewrite that lands the purpose is the preferred outcome over a small safe patch that preserves the wrong model. Specifically not wanted: minimal additive or defensive changes made out of a fear of breaking things, preserved signatures and schema shapes because something already depends on them, tests that pin behaviour nobody ruled on, and fixes contorted to fit the existing architecture instead of reshaping the architecture to fit the fix.
 - **Not part of the ruling** — this is permission, not a waiver. Real defects are still fixed in the same change with a resolving test (#32, #33, #34 and #43 destroy data through ordinary commands). Security boundaries are not suggestions (path containment, #14). The verify chain still runs (`CLAUDE.md:46-48`). Rewrite boldly, then verify hard.
 - **Stated in**: `PLAN.md` ("The code is a suggestion") and `docs/spec/why.md`.
+- **Note 10-06**: D18–D23 have since removed the three symptoms this ruling named (four statuses → D19; the erased `mark` → D20). The flat catalog and missing hierarchy (#41) remain, and the ruling still governs how they are addressed.
+
+### D18 — The archive is the product
+
+- **Status**: ruled (closes #40)
+- **Why**: chive's value is answering "what can I rebuild, and how" on a machine that is not the one it was born on. Every design choice that did not serve that question had drifted toward serving `clean`, and the evidence was in the register itself: D10 spent a ruling on a clean confirmation prompt while the archive's headline flow was broken (#35, #44), D14 shaped the status model around `clean`, and `stats` led with percentages rather than holes. Cleaning is a consumer of a verdict, not the reason the verdict exists.
+- **Ruling**: chive is the `home.nix` nobody wrote: an imperative NixOS configuration, read back off a machine that already exists. The catalog is the product — a portable, versionable, plain-text record of how to re-derive what matters. Deleting is a side benefit that happens when the owner has already decided something is disposable.
+- **Consequence**: any status, verb, or view that does not answer "can this be rebuilt, and how" earns its place only by serving `clean`. `holes` (#46) is the primary read path; `stats` leads with the hole count and demotes percentages.
+
+### D19 — Three verdicts, and only the owner may call a file disposable
+
+- **Status**: ruled (closes #38, supersedes D14)
+- **Why**: The four statuses answered two different questions with one enum, so "chive cannot explain this file" and "this file is safe to delete" collapsed into the same value. A file chive failed to explain — a package probe that missed, a repo it could not reach, an unrecognised extension — was recorded as `orphaned`, which is cleanable. The scan's inability to explain something was being treated as permission to delete it, and nothing in the enum distinguished "I checked and it's junk" from "I have no idea what this is."
+- **Ruling**: an entry is in exactly one of three states.
+
+  | Verdict | Meaning | Clean |
+  |---------|---------|-------|
+  | `restorable` | A recipe exists; chive can re-derive it. | never |
+  | `unknown` | It matters (assumed) and chive cannot rebuild it. A hole. | never |
+  | `disposable` | The owner has judged it a known gap; safe to delete. | yes |
+
+  Two consequences, both load-bearing:
+
+  1. **Protection is not a state.** Under the old model `not-restorable` was "protected," which implied a separate act to achieve safety. Here a file with no recipe is already `unknown`, and `unknown` is never cleanable — so safety is the default and `mark --status not-restorable` has nothing left to change. It is deleted as a verb, not deprecated.
+  2. **No automatic answer may produce `disposable`.** See D21 for what may, and D22 for what that means when evidence changes.
+
+  `temporary` and `orphaned` are removed, along with every config key, status spelling, test, and doc line that named them. There is no reader for the old values (see `CLAUDE.md` "No legacy").
+
+### D20 — Owner intent is one ordered log in the catalog; the last act wins
+
+- **Status**: ruled (closes #43, amends D16)
+- **Why**: #43 is a data-loss chain, not a correctness bug: `mark` a file protected → routine rescan → the verdict is gone and an older taught recipe re-applies → `clean` deletes it. Two defects composed. `mark` wrote only to the catalog the scanner then replaced (so the verdict never survived a scan), and scan rule 2 re-applied any taught recipe over any verdict (so even a surviving verdict was overruled). Both halves are the same mistake: owner intent was modelled as mutable state of the *scan* rather than as a durable, ordered record the scan *reads*.
+- **Ruling**: owner acts — `teach`, `dispose`, `withdraw` — are entries in one ordered log. Each is stamped with a monotonic sequence number and lives **in the catalog**, which is the chive file that travels off-box. Consequences:
+
+  - **Last act wins.** Teach then dispose leaves the file `disposable`; dispose then teach leaves it `restorable`. One rule, no precedence table, and it matches the owner's mental model: the most recent thing I said.
+  - **A rescan never reorders or erases the log.** It reads it and re-applies the newest act per path. This is what makes the verdict durable, and it is why verdicts cannot live in `config.toml`: the catalog is what a new machine imports, so a verdict kept in config stays behind with the old machine (this is also the write-path half of #44 — a verdict in the catalog is carried by `export` with no extra plumbing).
+  - **Withdrawal is a first-class act.** `withdraw` clears the log entry for a path; the entry then reverts to whatever chive can prove, which is `restorable` if a recipe remains and `unknown` if none does. This needs no separate rule — it falls out of "recipe present ⇒ restorable, absent ⇒ unknown."
+  - Verbs are conveniences, not the interface. The catalog is hand-editable and a hand-written verdict is exactly as valid as one written by a verb.
+
+### D21 — Verdict rules are user config, in Rhai
+
+- **Status**: ruled (lands with #38)
+- **Why**: `temporary` did one job — it made `clean` useful on day one by auto-classifying thousands of files chive would otherwise have to ask about. Removing it (D19) leaves the owner with no way to say "`.apk` files are disposable" except writing three thousand entries by hand. The old heuristic did this by guessing from filenames, which is the exact failure D19 forbids; the fix is to let the owner state the rule instead of chive guessing it, in a language where a rule can see what a filename cannot (owner, size, realpath, whether the symlink resolves).
+- **Ruling**: `config.toml` gains a `rules` list. Each rule is a Rhai script returning a verdict or nothing:
+
+  ```toml
+  [[rules]]
+  name = "installer packages are disposable"
+  script = '''
+    if path.ends_with(".apk") { "disposable" } else { () }
+  '''
+  ```
+
+  A rule may return any of the three verdicts. Rules are evaluated in order, first non-nothing result wins. **Rhai, not Python:** chive ships a musl-static binary (`docker/integration/README.md`) and its Alpine/Void integration targets depend on that; embedded Python needs glibc's `libpython` and would break the static build. Rhai is also sandboxed with no filesystem or process access unless granted, which matters while #14 (chive fabricating shell from untrusted data) is open — a rule language that could spawn a process would re-open that whole class.
+
+### D22 — Owner verdicts are sticky; chive's own are not
+
+- **Status**: ruled
+- **Why**: The question "what happens when evidence changes underneath a standing verdict?" only arises for verdicts chive *inferred*. For owner verdicts there is nothing to rule on — an owner act is the newest word and only the owner may supersede it. The asymmetry matters because D21's evidence rule only pays off if chive can retract its own inference: a dangling symlink gets repointed, and a recomputing scan promotes it to `restorable` via `ln -s`. An inferred `disposable` that outranked that fresh evidence would let `clean` delete a link the owner just repaired.
+- **Ruling**: stickiness is a per-verdict setting, defaulted per origin:
+
+  | Origin | Default | Meaning |
+  |--------|---------|---------|
+  | Owner (`teach`/`dispose`/`withdraw`, or hand-edited) | sticky | Survives rescan until the owner changes it. |
+  | Chive-inferred (provable-dead, provenance) | recompute | Re-derived from evidence every scan. |
+  | Rule (`[[rules]]`) | sticky | Owner-authored policy, so treated as owner intent — but withdrawable by editing or removing the rule. |
+
+  **Sticky-inferred is configurable and is a footgun.** It re-opens #43 through config: a stale `disposable` becomes permanent, because a verdict that nothing may revise is a verdict nothing may correct. It is a legitimate setting (an owner who has audited a subtree may want it frozen) and its hazard is recorded in `why.md` next to the rule.
+
+### D23 — `chive holes` is the work list
+
+- **Status**: ruled (closes #46's missing-verb half)
+- **Why**: The loop the product is built around — see what has no recipe, teach it — had no verb. `status` was a flat dump, `stats` led with percentages, and `README.md:61` documented a "teach me" view that does not exist. Under D18 the backlog of unknowns is the thing the owner most wants to see, so it gets a verb rather than a flag.
+- **Ruling**: `chive holes` lists `unknown` entries, largest first, each row carrying the act that would close it:
+
+  ```
+  14,002 holes (312 MB) — nothing chive can rebuild yet
+
+    250 MB  Pictures/2024/                    teach a recipe, or mark disposable
+     38 MB  Documents/                        teach a recipe, or mark disposable
+    2.1 MB  conf/emacs.d/init.el              taught: restorable
+  ```
+
+  `stats` keeps its counts but leads with the hole count and moves percentages below. `status` remains the flat by-verdict listing.

@@ -4,9 +4,23 @@ This document is canonical. If code disagrees with this document, the code is wr
 
 ## What chive is
 
-chive scans a machine, decides what matters, and for each meaningful file records a recipe for re-deriving it. The collection of recipes is the catalog. When you move to a new machine or lose files by accident, chive rebuilds what's missing by running those recipes.
+chive is the `home.nix` you never wrote: an imperative NixOS configuration, read
+back off a machine that already exists.
 
-chive does not recover bytes. It re-derives: a package is reinstalled, a file is re-exported from git, a symlink is recreated. A file that already exists is never touched.
+It scans a machine, decides what matters, and for each meaningful file records a
+recipe for re-deriving it. The collection of recipes is the catalog. When you
+move to a new machine or lose files by accident, chive rebuilds what's missing
+by running those recipes.
+
+chive does not recover bytes. It re-derives: a package is reinstalled, a file is
+re-exported from git, a symlink is recreated. A file that already exists is never
+touched.
+
+**The archive is the product.** Deleting is a side benefit: it happens where the
+owner has already judged something disposable, and it is not a reason for a
+verdict to exist (D18). Under the three-verdict model this is mechanical rather
+than aspirational — the only thing that makes a file cleanable is a judgement
+someone made, which is the same judgement the archive exists to record.
 
 ## The catalog is the point
 
@@ -15,23 +29,7 @@ Everything chive does serves one outcome: on a new or damaged machine, being abl
 - Files are addressed by relative path, so the same catalog describes any machine.
 - The catalog is plain text (TOML) that can be committed to git.
 - The catalog must live off-box to be useful: it is committed to a repo or kept on storage that survives the box.
-
-## Path containment (security boundary)
-
-A catalog is a file that may have come from anywhere — another machine, another
-person. Every entry path in a catalog is therefore constrained, and the
-constraint is enforced in `Catalog` construction so an invalid path cannot exist
-in memory:
-
-- relative to the scan root — never absolute, never a drive prefix;
-- `/`-separated, no empty segments, no `.` or `..` segments;
-- no backslash (a backslash is a legal Unix filename character, but it is how a
-  Windows-authored catalog would smuggle a second separator past a join);
-- no NUL.
-
-`chive import` refuses a catalog whose entries break the rule; `restore` and
-`clean` re-check that a joined path still falls under the root before touching
-the filesystem (defense in depth). A refused import leaves the store untouched.
+- Owner decisions live in the catalog too, not in local config, so a decision made on the old machine travels with it (D20).
 
 ## Path containment (security boundary)
 
@@ -56,32 +54,94 @@ Every catalog entry is addressed by `path` relative to the scan root. The scan r
 
 When restoring on a new machine, the user supplies the equivalent root via `--root`. Recipes that place files use `{dest}` which expands to `<root>/<path>` at restore time.
 
-## Statuses
+## Verdicts
 
-Every file in the catalog has exactly one status:
+Every catalog entry is in exactly one of three states:
 
-| Status | Meaning |
-|--------|---------|
-| `restorable` | This file can be re-derived. The catalog has a recipe. |
-| `not-restorable` | This file cannot be re-derived. The catalog records why. The owner can teach it a recipe to promote it to restorable. |
-| `temporary` | Transient file. Safe to clean. Never a restore target. |
-| `orphaned` | File present on disk but with no provenance and no taught recipe. Candidate for cleanup. |
+| Verdict | Meaning |
+|---------|---------|
+| `restorable` | The catalog holds a recipe. chive can re-derive this file. |
+| `unknown` | It matters and chive cannot rebuild it. A **hole**. |
+| `disposable` | The owner has judged it a known gap. Safe to delete. |
 
-### How status is assigned during scan
+`unknown` is the resting state for anything chive cannot explain, and the
+assumption is that it matters: a missed package probe, an unreachable repo, an
+unfamiliar extension are all statements about *chive*, not about the file.
 
-The decision is mechanical and deterministic, and one order governs it:
+There is no "protected" verdict. A file with no recipe is already `unknown`, and
+`unknown` is never cleanable, so a file cannot be deleted by chive failing to
+understand it. See D19.
 
-1. If the file is in an ignored directory (see Ignore list below) — not cataloged at all.
-2. If a user-taught recipe matches — `restorable`, source `user_supplied`. **A taught recipe is the owner's explicit word and overrules every automatic answer**, including an inferred recipe and even a temporary bloom (see D16).
-3. If the file matches a temporary-file heuristic — `temporary`.
-4. If provenance is detected (see Provenance detection below) — `restorable`, source `verified`.
-5. Otherwise — `orphaned`.
+### What may assign a verdict
 
-`not-restorable` is never assigned automatically. It is only assigned when the owner explicitly marks a file: `chive mark <path> --status not-restorable` moves an `orphaned` file to `not-restorable`, meaning "this file matters, I don't know how to rebuild it, don't clean it." This is the starting point for teaching.
+| Assigns | May return |
+|---------|------------|
+| Owner acts (`teach`, `dispose`, `withdraw`, or a hand-edited catalog) | all three |
+| Provenance detection | `restorable` |
+| Provable-dead detection | `disposable` |
+| Owner `[[rules]]` | all three |
 
-### Status and clean
+**Provable-dead** is the only automatic source of `disposable`, and it is
+narrow on purpose. chive may call a file disposable only when it can *prove* the
+file is already non-functional, never when it merely looks like junk:
 
-`chive clean` removes only `temporary` and `orphaned` files (with confirmation unless `--force`). It never touches `restorable` or `not-restorable`.
+- a symlink whose target does not resolve (this is not a corner case — a
+  `/nix/store`-backed home directory is full of them once a generation is
+  collected)
+- a file whose owning package is no longer installed (residue of a removed
+  package)
+- a file inside a directory the owner has declared
+
+Name-based heuristics — `*.tmp`, a trailing `~`, `emacs-workfile-` — do **not**
+qualify. Guessing from a filename is the inference D19 removed, so those are
+demoted to rule suggestions the owner writes for themselves (see Rules below).
+
+### How a verdict is assigned during scan
+
+1. If the path is in an ignored directory — not cataloged at all.
+2. If the owner log has an act for this path, the newest act governs (D20).
+   A `teach` yields `restorable`; a `dispose` yields `disposable`; a
+   `withdraw` means fall through and re-derive.
+3. If an owner rule matches — the rule's verdict, marked as rule-origin.
+4. If provenance is detected — `restorable`.
+5. If the file is provably dead — `disposable`.
+6. Otherwise — `unknown`.
+
+Steps 4 and 5 are checked in that order, and the order is pinned by
+`provenance_order_is_package_then_git_then_symlink_tests`: a live symlink is
+`restorable` by `ln -s` even though a dangling one is `disposable`, and only a
+symlink that fails to resolve reaches the provable-dead check.
+
+### Verdicts and clean
+
+`chive clean` removes only `disposable` files (with confirmation unless
+`--force`). It can never touch `restorable` or `unknown`.
+
+Because no automatic verdict is cleanable except provable-dead, `clean` is safe
+by construction rather than by convention: the set it may remove is exactly the
+set the owner (or a rule they wrote) has named.
+
+## Rules
+
+`config.toml` carries a `rules` list. Each rule is a Rhai script that returns a
+verdict or nothing; rules run in order and the first non-nothing result wins.
+
+```toml
+[[rules]]
+name = "installer packages are disposable"
+script = '''
+  if path.ends_with(".apk") { "disposable" } else { () }
+'''
+```
+
+A script sees the file's `path`, `size`, `extension`, `is_symlink`,
+`link_resolves`, `package`, and `in_ignored_dir`. It returns one of
+`"restorable"`, `"unknown"`, `"disposable"`, or `()` for no opinion.
+
+Rules are how the owner states the policy that `temporary` used to guess at. A
+rule can see things a filename cannot — whether a symlink resolves, which
+package owns the file — which is why the policy moved from a hardcoded
+heuristic to the owner's config rather than being deleted with `temporary`.
 
 ## Source
 
@@ -90,7 +150,8 @@ Every `restorable` entry has a `source`:
 - `verified` — chive inferred the recipe (provenance detection).
 - `user_supplied` — the owner supplied the recipe via `chive teach`.
 
-`source` is about recipe provenance, not file provenance. It stays separate from `status`.
+`source` is about recipe provenance, not verdict provenance. The verdict's own
+origin (owner / rule / chive) is recorded separately in `verdict_source`.
 
 ## Provenance detection (verified recipes)
 
@@ -102,7 +163,7 @@ match wins. This order is load-bearing and pinned by tests
    - Linux: `dpkg -S <abs>`, `pacman -Qo <abs>`, `rpm -qf --queryformat %{NAME} <abs>`, `apk info -W <abs>`, `xbps-query -o <abs>`
    - macOS: check if file is under a known brew/cellar path
    - Probes are answered per manager's real output; the probe answer is trimmed before the `name_match` regex runs against it. rpm/dnf are asked for the bare name (`--queryformat %{NAME}`) rather than parsed out of `name-version-release`.
-   - Nix store files are deliberately not claimed: no package-manager verb re-derives a file from a derivation path, so they fall through to git/symlink/orphan.
+   - Nix store files are deliberately not claimed: no package-manager verb re-derives a file from a derivation path, so they fall through to git/symlink/unknown.
    - Recipe: reinstall the owning package. For deb: `sudo apt-get install --reinstall <pkg>`. For pacman: `sudo pacman -S <pkg>`. For brew: `brew reinstall <pkg>`.
    - No `{dest}` substitution needed — the package manager places the file.
 
@@ -113,49 +174,73 @@ match wins. This order is load-bearing and pinned by tests
      (that recipe is honestly machine-bound).
    - `{dest}` is the file path. The repo must exist on the target machine (chive records the repo URL if available from remote config).
 
-3. **Symlink**: The file is a symbolic link.
+3. **Symlink**: The file is a symbolic link **and its target resolves**.
    - Recipe: `ln -s <target> <dest>`.
    - `{dest}` is the link path. `<target>` is the original symlink target.
+   - A symlink whose target does *not* resolve is not claimed here. Re-running
+     `ln -s` would recreate the same broken link, so the file falls through to
+     the provable-dead check and becomes `disposable`.
 
-4. **No provenance found** → not restorable via verification. Falls through to orphaned (unless taught).
+4. **No provenance found** → `unknown`, unless an owner act or rule already
+   decided the path.
 
-## Taught recipes (user_supplied)
+## Owner acts
 
-The owner teaches chive a recipe via:
+Owner acts are entries in one ordered log, stored in the catalog with a
+monotonic sequence number. The newest act for a path governs, and a rescan
+never reorders or erases the log — it reads it and re-applies it (D20).
 
 ```bash
-chive teach <path> --method "<shell command>"
+chive teach <path> --method "<shell command>"   # -> restorable
+chive dispose <path>                            # -> disposable
+chive withdraw <path>                           # -> back to what chive can prove
 ```
 
-This writes a recipe to the extension file (see Store layout below). The entry becomes `restorable`, source `user_supplied`.
-
-A taught recipe works on a file in **any** of the four statuses: teaching an
-`orphaned`, `not-restorable`, `temporary`, or already-`restorable` (inferred)
-file promotes it to `restorable` with `user_supplied`, overriding whatever chive
-would otherwise have inferred. This is the owner's explicit word, and it wins
-over automatic detection (see D16).
-
-The recipe is a shell command. `{dest}` expands to the file's absolute path on the target (root + relative path). Example:
+### chive teach
 
 ```bash
 chive teach conf/emacs.d/init.el --method "git -C ~/dotfiles pull && cp ~/dotfiles/emacs.d/init.el '{dest}'"
 ```
 
-Taught recipes are also editable by hand in the extension file (TOML format).
+Records a recipe and appends a `teach` act for the path. The entry is
+`restorable`, source `user_supplied`.
 
-## Marking files (the unified verb)
+The recipe is a shell command. `{dest}` expands to the file's absolute path on
+the target (root + relative path).
 
-`chive mark <path> --status <not-restorable|temporary|orphaned>` sets a file's
-status explicitly. It is the single verb that covers what was once two separate
-actions and more:
+`teach` works on a path in any state, including one that is not on this machine
+at all — teaching a recipe for a file you have not created yet is the core
+planning workflow, so an absent path is accepted and the entry records that the
+recipe exists but the file does not (see #45).
 
-- `--status not-restorable` — the old `protect`: "this matters, don't clean it."
-- `--status temporary` — "this is transient, safe to clean."
-- `--status orphaned` — "no recipe, no protection; cleanable."
+### chive dispose
 
-Marking always clears any existing recipe (a marked file is never restorable).
-Use `mark not-restorable` then `teach` to turn a protected file into a
-rebuildable one.
+```bash
+chive dispose Pictures/photo.nef
+```
+
+Appends a `dispose` act: the owner has judged the file a known gap, so `clean`
+may remove it. This is the only verb that makes a file cleanable, and it is the
+replacement for the old `mark --status temporary` and `mark --status orphaned`
+spellings.
+
+### chive withdraw
+
+```bash
+chive withdraw Pictures/photo.nef
+```
+
+Removes the owner's act for the path. The entry then reverts to whatever chive
+can prove: `restorable` if a recipe remains, `unknown` if none does. This needs
+no rule of its own — it is what "recipe present ⇒ restorable, absent ⇒ unknown"
+already says.
+
+### The log is the interface
+
+The verbs are conveniences. The catalog is hand-editable TOML, and an act
+written by hand is exactly as valid as one written by a verb: append an entry to
+`[[acts]]` with a higher `seq`. chive never requires the owner to use the CLI
+to express a decision.
 
 ## Recipes and restore
 
@@ -222,12 +307,18 @@ The config directory defaults to `~/.config/chive/`. It is a git-worthy director
 
 ```
 ~/.config/chive/
-├── config.toml          # ignore list, scan defaults
-├── recipes.toml         # user-taught recipes (extension file)
+├── config.toml          # ignore list, verdict rules, scan defaults
+├── catalog.toml         # the catalog: entries + the owner act log (versionable)
 └── catalog.db           # working index (derived, not committed)
 ```
 
-The catalog TOML (the versionable artifact) is written by `chive export` or by `chive scan` directly to a path the user specifies. For cross-machine use, the user commits `catalog.toml` to a repo.
+`chive teach` writes to the catalog, not to a separate extension file. The
+rationale is D20: recipes and verdicts are both owner intent, both must survive
+a rescan, and both must travel to a new machine — splitting them across two
+files is what let a verdict die while its recipe lived (issue #43).
+
+The catalog TOML is the versionable artifact. It is written by `chive export`,
+or by `chive scan --to <path>` directly to a path the user specifies.
 
 ## Catalog TOML schema
 
@@ -237,68 +328,85 @@ The catalog TOML (the versionable artifact) is written by `chive export` or by `
 root = "/home/user"          # scan root
 scanned_at = "2026-09-04T12:00:00Z"
 host = "desktop"
+next_seq = 3                 # monotonic owner-act counter
 
-# one entry per file
+# one entry per path
 [[files]]
 path = "conf/emacs.d/init.el"            # relative to root
-status = "restorable"
+verdict = "restorable"
 category = "config"
 restore_method = "git -C ~/dotfiles checkout HEAD -- conf/emacs.d/init.el"
-source = "verified"
+source = "user_supplied"
+verdict_source = "owner"
+present = true                # false for a taught recipe with no file here
 size = 2048
 modified = "2026-08-15T10:00:00Z"
 
 [[files]]
 path = "Documents/notes.pdf"
-status = "restorable"
+verdict = "restorable"
 category = "document"
 restore_method = "apt-get install --reinstall poppler-utils"
 source = "verified"
+verdict_source = "chive"
+present = true
 size = 1048576
 modified = "2026-01-15T10:00:00Z"
 
 [[files]]
 path = "Pictures/photo.nef"
-status = "orphaned"
+verdict = "disposable"
 category = "image"
 restore_method = null
 source = null
+verdict_source = "owner"
+present = true
 size = 25000000
 modified = "2025-12-01T14:00:00Z"
 
 [[files]]
-path = "tmp/emacs-workfile-~"
-status = "temporary"
-category = null
+path = ".gtkrc-2.0"
+verdict = "disposable"          # symlink target does not resolve
+category = "config"
 restore_method = null
 source = null
-size = 0
-modified = "2026-09-04T11:59:00Z"
+verdict_source = "chive"
+present = true
+size = 30
+modified = "2026-10-06T00:54:00Z"
+
+# the ordered owner-act log. Newest `seq` for a path governs.
+[[acts]]
+seq = 1
+path = "conf/emacs.d/init.el"
+kind = "teach"                  # teach | dispose | withdraw
+
+[[acts]]
+seq = 2
+path = "Pictures/photo.nef"
+kind = "dispose"
 ```
 
 Fields:
 - `path` (string, required) — relative to root.
-- `status` (string, required) — one of the four statuses.
-- `category` (string or null) — the category, or null for temporary/unclassified files.
+- `verdict` (string, required) — `restorable`, `unknown`, or `disposable`.
+- `category` (string or null) — the category, or null when unclassified.
 - `restore_method` (string or null) — the recipe. Null unless restorable.
 - `source` (string or null) — `verified` or `user_supplied`. Null unless restorable.
+- `verdict_source` (string) — `owner`, `rule`, or `chive`. Drives stickiness (D22).
+- `present` (boolean) — whether the path exists on the machine that wrote this
+  catalog. `false` means a recipe was taught for a file that is not here, which
+  is legitimate when planning a new machine (#45).
 - `size` (integer) — bytes, informational.
 - `modified` (string or null) — ISO 8601, informational.
-- `not_restorable_reason` (string or null) — present only if status is `not-restorable`.
 
-## Extension file (recipes.toml)
-
-User-taught recipes live here. `chive teach` writes to this file.
-
-```toml
-[[recipe]]
-path = "conf/emacs.d/init.el"
-method = "git -C ~/dotfiles pull && cp ~/dotfiles/emacs.d/init.el '{dest}'"
-```
-
-Fields:
+Act fields:
+- `seq` (integer, required) — monotonic. `meta.next_seq` is the next value to use.
 - `path` (string, required) — relative to root.
-- `method` (string, required) — the shell recipe. `{dest}` is substituted at restore time.
+- `kind` (string, required) — `teach`, `dispose`, or `withdraw`.
+
+A `withdraw` act does not carry a verdict; it removes the path's owner override
+so the entry re-derives.
 
 ## SQLite schema (working index)
 
@@ -309,55 +417,83 @@ CREATE TABLE meta (
 );
 
 CREATE TABLE files (
-    path                  TEXT PRIMARY KEY,  -- relative to root
-    status                TEXT NOT NULL,      -- restorable|not-restorable|temporary|orphaned
-    category              TEXT,               -- document|image|code|...|null
-    restore_method        TEXT,               -- null unless restorable
-    source                TEXT,               -- verified|user_supplied|null
-    not_restorable_reason TEXT,               -- null unless not-restorable
-    size                  INTEGER,
-    modified              TEXT                -- ISO 8601
+    path           TEXT PRIMARY KEY,  -- relative to root
+    verdict        TEXT NOT NULL,     -- restorable|unknown|disposable
+    category       TEXT,              -- document|image|code|...|null
+    restore_method TEXT,              -- null unless restorable
+    source         TEXT,              -- verified|user_supplied|null
+    verdict_source TEXT NOT NULL,     -- owner|rule|chive
+    present        INTEGER NOT NULL,  -- 0|1
+    size           INTEGER,
+    modified       TEXT               -- ISO 8601
+);
+
+CREATE TABLE acts (
+    seq   INTEGER PRIMARY KEY,
+    path  TEXT NOT NULL,
+    kind  TEXT NOT NULL              -- teach|dispose|withdraw
 );
 ```
 
-`meta` stores: `schema_version`, `root`, `scanned_at`, `host`.
+`meta` stores: `schema_version`, `root`, `scanned_at`, `host`, `next_seq`.
 
 ## CLI reference
 
 ### chive scan
 
 ```bash
-chive scan <path> [--ignore <pattern>...]
+chive scan <path> [--to <file>] [--ignore <pattern>...]
 ```
 
-Crawls `<path>`, runs provenance detection, writes entries to the catalog and the catalog TOML.
+Crawls `<path>`, runs provenance detection and owner rules, re-applies the owner
+act log, and writes the catalog. With `--to`, the catalog TOML is written
+directly to that path — the archive is updated by the scan itself, not by a
+separate manual export (issue #44).
 
 Output:
 ```
 Scanned 12,403 files:
   8,201 restorable (verified)
     312 restorable (user-supplied)
-    847 not-restorable
-  2,903 temporary
-    140 orphaned
+  3,750 unknown (holes)
+    140 disposable (owner 96, provably dead 44)
 ```
 
 ### chive status
 
 ```bash
-chive status [--restorable | --not-restorable | --temporary | --orphaned]
+chive status [--restorable | --unknown | --disposable]
 ```
 
-Lists entries filtered by status.
+Lists entries filtered by verdict.
 
 Output:
 ```
 restorable (verified):
-  conf/emacs.d/init.el          config     git -C ~/dotfiles checkout HEAD -- conf/emacs.d/init.el
   Documents/notes.pdf           document   apt-get install --reinstall poppler-utils
 
 restorable (user-supplied):
+  conf/emacs.d/init.el          config     git -C ~/dotfiles checkout HEAD -- conf/emacs.d/init.el
   conf/zshrc                    config     cp ~/dotfiles/zshrc '{dest}'
+```
+
+### chive holes
+
+```bash
+chive holes [--limit <n>]
+```
+
+The work list: every `unknown` entry, largest first, each row carrying the act
+that would close it. This is the primary read path under D18 — the backlog of
+things chive cannot rebuild is what the owner most wants to see.
+
+Output:
+```
+14,002 holes (312 MB) — nothing chive can rebuild yet
+
+  250 MB  Pictures/2024/            teach a recipe, or dispose
+   38 MB  Documents/                teach a recipe, or dispose
+  2.1 MB  conf/emacs.d/init.el      restorable (user-supplied)
 ```
 
 ### chive plan
@@ -405,7 +541,9 @@ failed:   conf/zshrc — exit code 1
 chive teach <path> --method "<shell command>"
 ```
 
-Writes a recipe to `recipes.toml`. The entry becomes `restorable`, source `user_supplied`.
+Appends a `teach` act to the catalog. The entry becomes `restorable`, source
+`user_supplied`, `verdict_source` `owner`. Accepts a path that is not present on
+this machine.
 
 Output:
 ```
@@ -413,39 +551,47 @@ taught: conf/emacs.d/init.el
   method: git -C ~/dotfiles pull && cp ~/dotfiles/emacs.d/init.el '{dest}'
 ```
 
-### chive mark
+### chive dispose
 
 ```bash
-chive mark <path> --status <not-restorable|temporary|orphaned>
+chive dispose <path>
 ```
 
-Sets a file's status explicitly (the unified verb). `mark` clears any existing
-recipe, so a marked file is never restorable.
-
-```bash
-chive mark Pictures/photo.nef --status not-restorable
-```
+Appends a `dispose` act. The entry becomes `disposable` and `clean` may remove
+it. This is the only verb that makes a path cleanable.
 
 Output:
 ```
-marked: Pictures/photo.nef → not-restorable
+disposed: Pictures/photo.nef
+```
+
+### chive withdraw
+
+```bash
+chive withdraw <path>
+```
+
+Removes the owner's act for the path, so the entry re-derives from evidence.
+
+Output:
+```
+withdrew: Pictures/photo.nef -> unknown
 ```
 
 ### chive clean
 
 ```bash
-chive clean [--scope <temporary|orphaned|both>] [--dry-run] [--force]
+chive clean [--dry-run] [--force]
 ```
 
-Removes `temporary` and/or `orphaned` files, scoped by `--scope` (default
-`both`). Without `--force`, prompts for confirmation. `--dry-run` prints what
-would be removed.
+Removes `disposable` files. Without `--force`, prompts for confirmation.
+`--dry-run` prints what would be removed.
 
 Output:
 ```
-Would remove 3,043 file(s) (2,903 temporary, 140 orphaned):
-  tmp/emacs-workfile-~
-  .cache/thumbnails/...
+Would remove 140 file(s):
+  Pictures/photo.nef
+  .gtkrc-2.0              (dangling symlink)
   ...
 Remove? [y/N]
 ```
@@ -456,7 +602,8 @@ Remove? [y/N]
 chive export [--to <file>]
 ```
 
-Writes the catalog as TOML. Default: `catalog.toml` in the config directory.
+Writes the catalog as TOML, including the owner act log. Default: `catalog.toml`
+in the config directory.
 
 ### chive import
 
@@ -464,7 +611,7 @@ Writes the catalog as TOML. Default: `catalog.toml` in the config directory.
 chive import [--from <file>]
 ```
 
-Loads a catalog from TOML. Replaces the working index.
+Loads a catalog from TOML, act log included. Replaces the working index.
 
 ### chive stats
 
@@ -472,15 +619,18 @@ Loads a catalog from TOML. Replaces the working index.
 chive stats
 ```
 
+Leads with the hole count, because that is the number the owner can act on
+(D18). Percentages come after.
+
 Output:
 ```
 Catalog: 12,403 files, 245 MB
-  restorable:       8,513 (69%)
-  not-restorable:     847 (7%)
-  temporary:        2,903 (23%)
-  orphaned:           140 (1%)
-  verified:          8,201 (96% of restorable)
-  user-supplied:       312 (4% of restorable)
+
+  holes (unknown):        3,891 (31%)     <- nothing chive can rebuild yet
+  restorable:             8,372 (67%)
+    verified:             8,201 (98% of restorable)
+    user-supplied:          171 (2% of restorable)
+  disposable:               140 (1%)
 ```
 
 ## Non-goals
