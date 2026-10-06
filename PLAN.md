@@ -3,34 +3,40 @@
 Worker loop: top unchecked item only, fix + test, commit, check off, stop.
 Note: all 11 commits are ds-era (scaffolded 09-05/06) — review as new code, not fixes.
 
-## The code is a suggestion
+## The code is a suggestion — change it drastically
 
-Every line of `src/` is **provisional**. It was scaffolded before the purpose was
-settled (#40), against a model the purpose no longer supports: four statuses
-designed to make `clean` safe, a flat per-file catalog with no hierarchy, and a
-`mark` verb that does not survive a rescan. None of that is a contract, and no
-worker should reverse-engineer intent from it.
+The implementation predates the settled purpose (#40). It is not a foundation to
+build on and not a shape to be careful with. **A drastic rewrite is the expected
+outcome here, not a risk to be managed.** If the right fix is to delete a module
+and write it again, delete it and write it again.
 
-**Freely changeable, without asking:** the status model and its names, the CLI
-surface and its flags, the catalog TOML and SQLite schemas, the store layout,
-the module structure, and any test that pins *provisional behaviour* rather than
-a rule in `target-state.md`.
+Do not be gentle with the existing code. Specifically, do not:
 
-**Not excused by this:**
+- make minimal, additive, defensive changes because breaking something feels
+  risky — timid patching is exactly what produced a model nobody chose;
+- preserve a signature, module boundary, flag name, table column or schema
+  shape because something already depends on it;
+- keep a test that pins behaviour nobody ruled on;
+- contort a fix to fit the current architecture instead of reshaping the
+  architecture to fit the fix;
+- treat an existing file as if a human were depending on its current contents.
+  Nobody is. It is scaffolding.
 
-- **Real defects are still real defects.** #32, #33, #34 and #43 destroy data
-  through ordinary commands with no error anywhere. Being provisional does not
-  make them tolerable, and "the code was only a suggestion" is never a reason to
-  leave one open.
-- **Security boundaries are not suggestions** — path containment
-  (`target-state.md:19-34`) and the shell-fabrication gap in #14.
-- **The verify chain still runs** (`CLAUDE.md:46-48`).
-- **No shim preserves an unruled shape.** If a thing is replaced, the old thing
-  goes with it, including its tests (`CLAUDE.md:32-34`).
+The spec is the contract, not the source. Nothing in `src/` needs an owner's
+permission to be rewritten.
 
-Provisional design is not optional correctness. If the correct fix is easier
-because you may reshape the model, reshape it — but the defect still gets fixed
-and still gets a resolving test in the same change.
+Two things are **not** provisional, and are not a licence to rewrite:
+
+- **Real defects still get fixed**, in the same change, with a resolving test.
+  #32, #33, #34 and #43 destroy data through ordinary commands and no error
+  anywhere. "The code was only a suggestion" is never a reason to leave one open.
+- **Security boundaries and the verify chain stay.** Path containment
+  (`target-state.md:19-34`), the shell-fabrication gap in #14, and
+  `CLAUDE.md:46-48`.
+
+Rewrite boldly, then verify hard. A large honest rewrite that lands the purpose
+beats a small safe patch that keeps the wrong model — and beats a timid patch
+that is careful never to break anything, which is how the current model happened.
 
 Ruled as **D17**; rationale in `docs/spec/why.md`.
 
