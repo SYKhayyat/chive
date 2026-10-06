@@ -228,6 +228,11 @@ impl<'a> Scanner<'a> {
         // 3. The owner's own policy, if a rule has an opinion about this path.
         let facts = rules::facts_for(&abs, rel, size, package.as_deref());
         if let Some((verdict, _label)) = self.rules.evaluate(&facts)? {
+            // The origin is the RULE's on every branch. Routing `unknown` through
+            // `new_unknown` stamped it `Origin::Chive`, which made a rule-authored
+            // verdict non-sticky and contradicted D22 -- and the inconsistency
+            // with `new_disposable`, which takes the origin as a parameter, is
+            // what made it a bug rather than a choice.
             return Ok(match verdict {
                 Verdict::Disposable => FileEntry::new_disposable(
                     rel.to_string(),
@@ -238,9 +243,10 @@ impl<'a> Scanner<'a> {
                 ),
                 // A rule claiming restorable must supply a recipe to be useful,
                 // and chive has none; the honest reading of "I know how to
-                // rebuild this" without a recipe is a hole.
+                // rebuild this" without a recipe is a hole. Still the rule's
+                // claim about it, so still rule-origin.
                 Verdict::Restorable | Verdict::Unknown => {
-                    FileEntry::new_unknown(rel.to_string(), category, size, modified)
+                    FileEntry::new_hole(rel.to_string(), category, Origin::Rule, size, modified)
                 }
             });
         }
@@ -402,6 +408,38 @@ mod scan_tests {
                 Verdict::Unknown,
                 "{} must not be guessed disposable",
                 e.path
+            );
+        }
+    }
+
+    #[test]
+    fn a_rule_authored_verdict_keeps_rule_origin_and_its_stickiness() {
+        // Issue #54: a rule returning `unknown` used to be stamped
+        // `Origin::Chive`, which made it non-sticky and contradicted D22. D22's
+        // table says rule verdicts are owner policy and are not second-guessed.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("thing.conf"), "x").unwrap();
+        let rules = Rules::compile(&[Rule {
+            name: "hold".into(),
+            script: r#""unknown""#.into(),
+        }])
+        .unwrap();
+        let mock = Mock::default();
+        let (cfg, pkg, _) = parts();
+        let s = Scanner::new(&mock, &pkg, dir.path(), &cfg, &[], rules);
+
+        for _ in 0..2 {
+            let files = s.scan(dir.path(), &no_acts()).unwrap();
+            let e = files.iter().find(|e| e.path == "thing.conf").unwrap();
+            assert_eq!(e.verdict, Verdict::Unknown);
+            assert_eq!(
+                e.verdict_source,
+                Origin::Rule,
+                "the rule decided this, so it must be recorded as the decider"
+            );
+            assert!(
+                e.verdict_source.is_sticky(),
+                "D22: rule verdicts are owner policy and survive a rescan"
             );
         }
     }

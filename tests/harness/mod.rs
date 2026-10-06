@@ -39,31 +39,30 @@ pub struct Env {
     pub calls: PathBuf,
 }
 
-/// Make git run deterministically, deaf to the host's `~/.gitconfig` (a
-/// signed-commit or absent-identity host would fail these).
-fn hermetic_git_env_once() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        for (k, v) in [
-            ("GIT_AUTHOR_NAME", "chive-tests"),
-            ("GIT_AUTHOR_EMAIL", "test@example.invalid"),
-            ("GIT_COMMITTER_NAME", "chive-tests"),
-            ("GIT_COMMITTER_EMAIL", "test@example.invalid"),
-            ("GIT_CONFIG_GLOBAL", "absent-chive-gitconfig"),
-            ("GIT_CONFIG_SYSTEM", "absent-chive-gitconfig"),
-        ] {
-            // SAFETY: ran once at test start; no other thread races the env.
-            unsafe { std::env::set_var(k, v) };
-        }
-    });
-}
+/// Git determinism, per child rather than process-globally (issue #58).
+///
+/// These were set once through `std::env::set_var` behind a `Once`, with a SAFETY
+/// comment claiming no other thread raced the env. The claim was false: `Once`
+/// serialises writers, it does not exclude readers, and other test files spawn
+/// subprocesses from threads that never construct an `Env`. Worse, the vars were
+/// never passed to the child, so git determinism depended on which test happened
+/// to run first. Both are fixed by putting them on every child.
+pub const GIT_ENV: &[(&str, &str)] = &[
+    ("GIT_AUTHOR_NAME", "chive-tests"),
+    ("GIT_AUTHOR_EMAIL", "test@example.invalid"),
+    ("GIT_COMMITTER_NAME", "chive-tests"),
+    ("GIT_COMMITTER_EMAIL", "test@example.invalid"),
+    // Deaf to the host's `~/.gitconfig`: a signed-commit or absent-identity host
+    // would otherwise fail these.
+    ("GIT_CONFIG_GLOBAL", "absent-chive-gitconfig"),
+    ("GIT_CONFIG_SYSTEM", "absent-chive-gitconfig"),
+];
 
 impl Env {
     /// A fresh root under `CARGO_TARGET_TMPDIR`. Removed first, because that
     /// dir persists across runs and a fixture that only creates carries
     /// yesterday's state into today's assertion.
     pub fn new(name: &str) -> Env {
-        hermetic_git_env_once();
         let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("chive-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("home");
@@ -98,6 +97,9 @@ impl Env {
             ("CHIVE_OWNERSHIP_FILE", self.owners.clone()),
             ("CHIVE_CALL_LOG", self.calls.clone()),
         ]
+        .into_iter()
+        .chain(GIT_ENV.iter().map(|(k, v)| (*k, PathBuf::from(v))))
+        .collect()
     }
 
     /// The real binary, pointed at this scratch machine, ready to run.
@@ -156,9 +158,12 @@ impl Env {
         let repo = self.home.join(rel);
         std::fs::create_dir_all(&repo).unwrap();
         let git = |args: &[&str]| {
-            let o = Command::new("git")
-                .current_dir(&repo)
-                .args(args)
+            let mut c = Command::new("git");
+            c.current_dir(&repo).args(args);
+            for (k, v) in GIT_ENV {
+                c.env(k, v);
+            }
+            let o = c
                 .output()
                 .unwrap_or_else(|e| panic!("git {args:?} failed: {e}"));
             assert!(

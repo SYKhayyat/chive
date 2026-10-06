@@ -129,16 +129,6 @@ enum Command {
     },
 }
 
-/// Return SIGPIPE to its default behaviour so writing to a closed pipe (e.g.
-/// `chive ... | head`) terminates quietly instead of panicking in the std
-/// printer. This is the usual, correct convention for Unix CLI tools.
-fn restore_sigpipe() {
-    #[cfg(unix)]
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
-}
-
 /// The `config` sub-actions.
 #[derive(Debug, Subcommand)]
 enum ConfigCmd {
@@ -173,9 +163,11 @@ enum PlanCmd {
 
 /// Parse the full `argv` (the first element is the program name, as clap
 /// expects) and run the chosen command. Returns the process exit code.
+/// Parse `argv` and run the chosen command, returning the process exit code.
+///
+/// The caller owns the process: anything global to the process belongs in `main`,
+/// not here, so a library consumer is not mutated on the way past.
 pub fn run(argv: impl IntoIterator<Item = String>) -> Result<i32> {
-    restore_sigpipe();
-
     let cli = match Cli::try_parse_from(argv) {
         Ok(c) => c,
         Err(e) => {

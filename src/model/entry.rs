@@ -69,9 +69,24 @@ impl FileEntry {
         }
     }
 
+    /// A hole chive decided by itself. For a rule's claim, use [`Self::new_hole`]
+    /// — the origin drives stickiness (D22), so hardcoding `Chive` here is how a
+    /// rule-authored verdict became non-sticky (issue #54).
     pub fn new_unknown(
         path: String,
         category: Option<Category>,
+        size: i64,
+        modified: Option<String>,
+    ) -> Self {
+        Self::new_hole(path, category, Origin::Chive, size, modified)
+    }
+
+    /// A hole decided by `origin`. Named `hole` rather than `unknown` so a caller
+    /// passing a non-`Chive` origin reads as deliberate.
+    pub fn new_hole(
+        path: String,
+        category: Option<Category>,
+        verdict_source: Origin,
         size: i64,
         modified: Option<String>,
     ) -> Self {
@@ -81,7 +96,7 @@ impl FileEntry {
             category,
             restore_method: None,
             source: None,
-            verdict_source: Origin::Chive,
+            verdict_source,
             present: true,
             size,
             modified,
@@ -135,6 +150,21 @@ mod entry_tests {
         );
         assert_eq!(e.source, Some(Source::Verified));
         assert!(e.present);
+    }
+
+    #[test]
+    fn a_hole_may_be_decided_by_anything_and_records_who() {
+        let mine = FileEntry::new_unknown("a".into(), None, 1, None);
+        let ruled = FileEntry::new_hole("b".into(), None, Origin::Rule, 1, None);
+        let owned = FileEntry::new_hole("c".into(), None, Origin::Owner, 1, None);
+        assert_eq!(mine.verdict_source, Origin::Chive);
+        assert!(!mine.verdict_source.is_sticky());
+        assert!(ruled.verdict_source.is_sticky());
+        assert!(owned.verdict_source.is_sticky());
+        for e in [&mine, &ruled, &owned] {
+            assert_eq!(e.verdict, Verdict::Unknown);
+            assert!(!e.verdict.is_cleanable());
+        }
     }
 
     #[test]
