@@ -20,7 +20,7 @@
 //! both package and git are only reached when the earlier sources miss), so a
 //! scan is no heavier than the provenance it actually needs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use walkdir::{DirEntry, WalkDir};
 
@@ -134,6 +134,12 @@ pub struct Scanner<'a> {
     config: &'a Config,
     /// Extra ignore patterns from the CLI, beyond the config file.
     extra_ignore: &'a [String],
+    /// Absolute directories never cataloged, whatever the ignore list says.
+    ///
+    /// Matched on the resolved path rather than the basename, because the thing
+    /// to exclude is *this* directory — a user who happens to have `~/chive`
+    /// containing their own work must still get it cataloged.
+    skip_dirs: &'a [PathBuf],
     rules: Rules,
 }
 
@@ -150,8 +156,16 @@ impl<'a> Scanner<'a> {
             provenance: Provenance::new(runner, package, scan_root),
             config,
             extra_ignore,
+            skip_dirs: &[],
             rules,
         }
+    }
+
+    /// The scanner, plus directories that are never cataloged however the
+    /// ignore list is configured.
+    pub fn with_skip_dirs(mut self, skip_dirs: &'a [PathBuf]) -> Self {
+        self.skip_dirs = skip_dirs;
+        self
     }
 
     /// Walk `root` and produce one entry per path, with the owner act log
@@ -314,6 +328,13 @@ impl<'a> Scanner<'a> {
         // Symlinks are cataloged as files but never followed into.
         if entry.file_type().is_symlink() {
             return true;
+        }
+        // chive's own store, matched on the resolved path. The default store
+        // sits inside the home it scans, so the catalog always described itself;
+        // `clean` then deleted the catalog it was reading from, and the entries
+        // reappeared only because the trailing save rewrote them (issue #33).
+        if entry.file_type().is_dir() && self.skip_dirs.iter().any(|d| entry.path().starts_with(d)) {
+            return false;
         }
         let name = entry.file_name().to_string_lossy();
         // Skip directories whose basename is in the ignore list.

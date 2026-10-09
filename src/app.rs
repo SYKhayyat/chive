@@ -150,6 +150,14 @@ impl App {
             }
         }
         let config = Config::load(&self.store.config_file())?;
+        // The store, resolved, so chive never catalogs its own catalog. The
+        // default store is inside the home it scans, so the walk would otherwise
+        // record catalog.toml/config.toml/adapters as files of the machine and
+        // `clean` would delete the archive it was reading (issue #33). Resolved
+        // rather than matched by basename: a directory the *owner* named chive
+        // is still theirs to catalog.
+        let skip_dirs = [std::fs::canonicalize(&self.store.dir)
+            .unwrap_or_else(|_| self.store.dir.clone())];
         let scanner = Scanner::new(
             &self.runner,
             &self.package,
@@ -157,7 +165,8 @@ impl App {
             &config,
             extra_ignore,
             config.compile_rules()?,
-        );
+        )
+        .with_skip_dirs(&skip_dirs);
         let files = scanner.scan(&root, &acts)?;
         Catalog::new(
             root.to_string_lossy().into_owned(),

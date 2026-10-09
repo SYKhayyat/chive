@@ -292,7 +292,6 @@ fn bug_32_scan_never_clobbers_an_existing_catalog() {
 /// Issue #33 — the chive store dir is never cataloged, so clean can never eat
 /// its own database.
 #[test]
-#[ignore = "issue #33 — chive catalogs (and clean deletes) its own store files"]
 fn bug_33_scan_excludes_its_own_store() {
     let env = Env::new("bug33_store");
     env.put(".bashrc", "b");
