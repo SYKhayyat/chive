@@ -6,7 +6,7 @@
 //! the TOML *is* the store, so D9 ("the TOML is the truth") is enforced by there
 //! being nothing else to disagree with it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::catalog::Catalog;
 use crate::catalog::toml;
@@ -122,7 +122,11 @@ impl App {
     /// #43's fix: the scanner is downstream of the owner's decisions, so a
     /// routine rescan cannot erase one (D20). A scan against no existing catalog
     /// simply starts with an empty log.
+    ///
+    /// The root is resolved to its absolute, symlink-free spelling *here*, so
+    /// nothing downstream ever holds what the owner typed (issue #34).
     pub fn scan(&self, root: &Path, extra_ignore: &[String]) -> Result<Catalog> {
+        let root = canonical_scan_root(root)?;
         let config = Config::load(&self.store.config_file())?;
         let acts = self
             .load_catalog()
@@ -131,12 +135,12 @@ impl App {
         let scanner = Scanner::new(
             &self.runner,
             &self.package,
-            root,
+            &root,
             &config,
             extra_ignore,
             config.compile_rules()?,
         );
-        let files = scanner.scan(root, &acts)?;
+        let files = scanner.scan(&root, &acts)?;
         Catalog::new(
             root.to_string_lossy().into_owned(),
             now_iso(),
@@ -145,6 +149,28 @@ impl App {
             acts,
         )
     }
+}
+
+/// The absolute, symlink-free scan root.
+///
+/// A relative or symlinked root is resolved once, at the only moment the real
+/// filesystem path is known. Recording what the owner typed meant every later
+/// command resolved `.` against whatever cwd it happened to run from, so
+/// `clean` from another directory reported removals that never happened and
+/// silently dropped live entries (issue #34).
+///
+/// `canonicalize` fails only when the path does not exist — which is the case
+/// that must never scan as an empty catalog and overwrite a real one
+/// (issue #32). The refusal names that consequence rather than just "not found",
+/// because the two halves of #32 have one shared cause.
+fn canonical_scan_root(root: &Path) -> Result<PathBuf> {
+    std::fs::canonicalize(root).map_err(|e| {
+        Error::Refused(format!(
+            "cannot scan {}: {e}; an unresolvable root would scan as an empty \
+             catalog and overwrite the existing one, and that catalog is the archive",
+            root.display()
+        ))
+    })
 }
 
 /// Returns an RFC 3339 / ISO 8601 UTC timestamp for the catalog meta.

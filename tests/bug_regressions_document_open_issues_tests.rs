@@ -337,11 +337,13 @@ fn bug_33_scan_excludes_its_own_store() {
 /// Issue #34 — the scan root is canonicalized, so a relative `scan .` cannot
 /// make every later command resolve against whatever cwd it is run from.
 #[test]
-#[ignore = "issue #34 — relative scan root resolved against the invocation cwd"]
 fn bug_34_scan_root_is_canonicalized() {
     let env = Env::new("bug34_relroot");
     env.put("proj/important.conf", "keep");
     let proj = env.home.join("proj");
+    // What `scan` from inside `proj` must record: the real, symlink-free,
+    // absolute path — not the `.` the owner typed.
+    let canonical = std::fs::canonicalize(&proj).unwrap();
 
     let mut c = env.cmd();
     c.current_dir(&proj);
@@ -355,17 +357,19 @@ fn bug_34_scan_root_is_canonicalized() {
         .find(|l| l.starts_with("root"))
         .expect("catalog has a root");
     assert!(
-        root_line.contains(proj.to_string_lossy().as_ref()),
-        "the recorded root must be absolute, got {root_line}"
+        root_line.contains(canonical.to_string_lossy().as_ref()),
+        "the recorded root must be canonical and absolute, got {root_line}"
     );
 
-    // from a different cwd, clean must target the real file (or refuse)
-    env.ok(&["dispose", "proj/important.conf"]);
+    // The canonicalization is only worth doing because of this half: `clean`
+    // runs from `env.root`, a different cwd than `proj`, and must still target
+    // the file the catalog actually describes.
+    env.ok(&["dispose", "important.conf"]);
     let (_, code) = env.run(&["clean", "--force"]);
     assert_eq!(code, 0, "clean must succeed against the canonical root");
     assert!(
         !proj.join("important.conf").exists(),
-        "clean must have removed the real file, not a cwd-relative phantom"
+        "clean must remove the real file, not a cwd-relative phantom"
     );
 }
 
