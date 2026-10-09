@@ -374,15 +374,17 @@ fn bug_34_scan_root_is_canonicalized() {
 /// Issue #35 — the README's migration flow must actually work: a foreign-root
 /// catalog imported on a new machine restores under the new $HOME.
 #[test]
-#[ignore = "issue #35 — restore without --root targets the old machine's root"]
 fn bug_35_migration_flow_restores_into_home() {
     let env = Env::new("bug35_migrate");
     let exported = env.root.join("catalog.toml");
+    // Single braces, not doubled: TOML has no brace-doubling escape, so
+    // `{{dest}}` would parse literally and the recipe would try to run
+    // `{/home/...}` as a command rather than substitute the path.
     std::fs::write(
         &exported,
         "[meta]\nroot = \"/home/alice-old-machine\"\nscanned_at = \"2026-01-01T00:00:00+00:00\"\nhost = \"old\"\n\
-             [[files]]\npath = \".gitconfig\"\nverdict = \"restorable\"\nverdict_source = \"owner\"\n\
-             restore_method = \"printf '[user]\\n' > '{{dest}}'\"\nsource = \"user_supplied\"\nsize = 8\n",
+              [[files]]\npath = \".gitconfig\"\nverdict = \"restorable\"\nverdict_source = \"owner\"\n\
+              restore_method = \"printf '[user]\\n' > '{dest}'\"\nsource = \"user_supplied\"\nsize = 8\n",
     )
     .unwrap();
 

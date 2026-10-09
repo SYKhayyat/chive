@@ -439,9 +439,31 @@ fn cmd_stats(app: &App) -> Result<i32> {
     Ok(0)
 }
 
+/// The root a restore runs against when the owner did not pass `--root`.
+///
+/// The catalog's own root is right only while it exists on this machine. A
+/// catalog imported from the old box names a path this box does not have, so
+/// every recipe would try to rebuild into `/home/alice-old-machine/...` — the
+/// README's migration flow failed with `could not create parent directory` for
+/// every file it was meant to restore, exit 1 (issue #35).
+///
+/// So: the catalog's root when it is here, and this machine's home when it is
+/// not. The home is the right answer because that is where a migrated home
+/// directory lands, and because the alternative — writing into a directory that
+/// does not exist — is what the bug was.
+fn default_restore_root(catalog: &Catalog) -> PathBuf {
+    let recorded = PathBuf::from(&catalog.root);
+    if recorded.exists() {
+        return recorded;
+    }
+    crate::catalog::home_dir()
+        .filter(|home| !home.as_os_str().is_empty())
+        .unwrap_or(recorded)
+}
+
 fn cmd_plan(app: &App, root: Option<PathBuf>, paths: &[String], exclude: &[String]) -> Result<i32> {
     let catalog = app.load_catalog()?;
-    let root = root.unwrap_or_else(|| PathBuf::from(&catalog.root));
+    let root = root.unwrap_or_else(|| default_restore_root(&catalog));
     let plan = action::build_plan(&catalog, &root, paths, exclude);
     println!("Plan: {} file(s) to restore", plan.len());
     for item in &plan {
@@ -458,7 +480,7 @@ fn cmd_restore(
     exclude: &[String],
 ) -> Result<i32> {
     let catalog = app.load_catalog()?;
-    let root = root.unwrap_or_else(|| PathBuf::from(&catalog.root));
+    let root = root.unwrap_or_else(|| default_restore_root(&catalog));
     let config = Config::load(&app.store.config_file())?;
     let plan = action::build_plan(&catalog, &root, paths, exclude);
     let outcomes = action::restore(

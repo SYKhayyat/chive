@@ -38,6 +38,9 @@ chive export --to catalog.toml
 
 # on the new machine
 chive import --from catalog.toml
+# `--root` is optional here: a catalog whose root does not exist on this
+# machine restores into your home, which is where a migrated home directory
+# lands. Pass it explicitly if your new root is somewhere else.
 chive plan restore --root ~/
 chive restore --all
 ```
