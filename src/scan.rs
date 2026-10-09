@@ -333,7 +333,8 @@ impl<'a> Scanner<'a> {
         // sits inside the home it scans, so the catalog always described itself;
         // `clean` then deleted the catalog it was reading from, and the entries
         // reappeared only because the trailing save rewrote them (issue #33).
-        if entry.file_type().is_dir() && self.skip_dirs.iter().any(|d| entry.path().starts_with(d)) {
+        if entry.file_type().is_dir() && self.skip_dirs.iter().any(|d| entry.path().starts_with(d))
+        {
             return false;
         }
         let name = entry.file_name().to_string_lossy();

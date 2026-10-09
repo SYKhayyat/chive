@@ -38,12 +38,7 @@ fn teaching_an_existing_file_marks_it_present() {
     env.put("notes.md", "real content");
 
     env.ok(&["scan", env.home.to_str().unwrap()]);
-    env.ok(&[
-        "teach",
-        "notes.md",
-        "--method",
-        "echo '{dest}' > content",
-    ]);
+    env.ok(&["teach", "notes.md", "--method", "echo '{dest}' > content"]);
 
     let line = env.status_line("notes.md");
     assert!(

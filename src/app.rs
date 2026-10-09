@@ -145,7 +145,8 @@ impl App {
                     "this catalog describes {}; scanning {} would replace it and \
                      every recipe it holds. Use a separate store (`--config-dir \
                      <dir>`) for a second tree",
-                    c.root, root.display()
+                    c.root,
+                    root.display()
                 )));
             }
         }
@@ -156,8 +157,8 @@ impl App {
         // `clean` would delete the archive it was reading (issue #33). Resolved
         // rather than matched by basename: a directory the *owner* named chive
         // is still theirs to catalog.
-        let skip_dirs = [std::fs::canonicalize(&self.store.dir)
-            .unwrap_or_else(|_| self.store.dir.clone())];
+        let skip_dirs =
+            [std::fs::canonicalize(&self.store.dir).unwrap_or_else(|_| self.store.dir.clone())];
         let scanner = Scanner::new(
             &self.runner,
             &self.package,
