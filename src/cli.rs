@@ -12,7 +12,7 @@ use crate::app::App;
 use crate::catalog::Catalog;
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::model::{FileEntry, Origin, Source, Verdict};
+use crate::model::{Origin, Source, Verdict};
 use crate::store::Store;
 
 /// chive — the `home.nix` you never wrote. Keep a recipe for every meaningful
@@ -481,51 +481,26 @@ fn cmd_restore(
     Ok(if failed { 1 } else { 0 })
 }
 
-/// Record an owner act, refresh the entry it governs, and save.
+/// Record an owner act, refresh the entry it governs, and save once.
 ///
 /// The act is the durable part; the entry is the derived view a scan would
-/// produce for that path. Recording the act first is what makes `teach` work on
-/// a path this machine does not have (issue #45): there is an entry to refresh,
+/// produce. `App::rederive` is the only thing that computes that view, so a verb
+/// cannot drift from it the way four hand-written copies did (issue #56).
+///
+/// Recording the act before deriving is what makes `teach` work on a path this
+/// machine does not have (issue #45): the entry is created and marked absent,
 /// but the log entry is what a later scan and a new machine both read.
-fn record_act(
-    app: &App,
-    act: Act,
-    apply: impl FnOnce(&mut Catalog, &Act) -> Result<()>,
-) -> Result<Catalog> {
+fn record_act(app: &App, act: Act) -> Result<Catalog> {
+    let path = act.path.clone();
     let mut catalog = app.load_catalog()?;
-    let recorded = catalog.record(act)?;
-    apply(&mut catalog, &recorded)?;
+    catalog.record(act)?;
+    let catalog = app.rederive(&catalog, &path)?;
     app.save_catalog(&catalog)?;
     Ok(catalog)
 }
 
 fn cmd_teach(app: &App, path: &str, method: &str) -> Result<i32> {
-    // The act is the durable part; the entry is the view a scan would produce
-    // for that path, and it is refreshed here too — otherwise `teach` followed
-    // by `restore` would do nothing until the next scan, which is the gap the
-    // old sidecar-file model hid.
-    record_act(app, Act::teach(0, path, method), |c, act| {
-        match c.by_path(&act.path).cloned() {
-            Some(mut e) => {
-                e.verdict = Verdict::Restorable;
-                e.verdict_source = Origin::Owner;
-                e.restore_method = act.method.clone();
-                e.source = Some(Source::UserSupplied);
-                c.upsert(e)?;
-            }
-            // Teaching for a path this machine does not have is legitimate —
-            // planning a new machine is the core workflow — so the entry is
-            // created and marked absent rather than dropped (issue #45).
-            None => {
-                c.upsert(FileEntry::new_absent_restorable(
-                    act.path.clone(),
-                    crate::model::classify(&act.path),
-                    act.method.clone().unwrap_or_default(),
-                ))?;
-            }
-        }
-        Ok(())
-    })?;
+    record_act(app, Act::teach(0, path, method))?;
     println!("taught: {path}");
     println!("  method: {method}");
     Ok(0)
@@ -533,39 +508,22 @@ fn cmd_teach(app: &App, path: &str, method: &str) -> Result<i32> {
 
 fn cmd_dispose(app: &App, path: &str) -> Result<i32> {
     // The only verb that makes a path cleanable.
-    record_act(app, Act::dispose(0, path), |c, act| {
-        if let Some(entry) = c.by_path(&act.path) {
-            let mut e = entry.clone();
-            e.verdict = Verdict::Disposable;
-            e.verdict_source = Origin::Owner;
-            e.restore_method = None;
-            e.source = None;
-            c.upsert(e)?;
-        }
-        Ok(())
-    })?;
+    record_act(app, Act::dispose(0, path))?;
     println!("disposed: {path}");
     Ok(0)
 }
 
 fn cmd_withdraw(app: &App, path: &str) -> Result<i32> {
     // Take back the judgement, then let chive re-examine the path: a recipe it
-    // can still prove stays, and one it cannot is a hole. This needs no rule of
-    // its own -- "recipe present => restorable, absent => unknown" -- but it does
-    // need the evidence, which `dispose` cleared when it took the verdict away.
-    // So the entry is re-derived here rather than left stale until the next scan.
-    let catalog = record_act(app, Act::withdraw(0, path), |c, act| {
-        if let Some(entry) = c.by_path(&act.path).cloned() {
-            c.upsert(entry)?;
-        }
-        Ok(())
-    })?;
-    let catalog = app.rederive(&catalog, path)?;
+    // can still prove stays, and one it cannot is a hole. That needs no rule of
+    // its own, but it does need evidence, which `dispose` cleared when it took
+    // the verdict away -- so the entry is re-derived here rather than left stale
+    // until the next scan.
+    let catalog = record_act(app, Act::withdraw(0, path))?;
     let after = catalog
         .by_path(path)
         .map(|e| e.verdict)
         .unwrap_or(Verdict::Unknown);
-    app.save_catalog(&catalog)?;
     println!("withdrew: {path} -> {after}");
     Ok(0)
 }

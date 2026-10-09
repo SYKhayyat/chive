@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 use crate::provenance::config::Table as AdapterTable;
 use crate::provenance::package::PackageDetector;
 use crate::runner::Real;
-use crate::scan::Scanner;
+use crate::scan::{self, Scanner};
 use crate::store::Store;
 
 /// Everything a command needs that is not its arguments.
@@ -79,20 +79,37 @@ impl App {
     /// Re-decide one path against the current evidence, and return the catalog
     /// with that entry replaced. The owner act log is untouched — this refreshes
     /// the *view*, not the record.
+    /// The single owner of "what does this path look like now".
+    ///
+    /// Every verb routes through here: `scan` when it walks the tree, and
+    /// `teach`/`dispose`/`withdraw` when they record an act. They used to be four
+    /// copies of the rule, and they had already drifted — `teach` hardcoded
+    /// `present: false` on an absent path while `withdraw` went through the
+    /// scanner and got `present: true`. Same rule, two answers (issue #56).
     pub fn rederive(&self, catalog: &Catalog, rel: &str) -> Result<Catalog> {
-        let config = Config::load(&self.store.config_file())?;
         let root = Path::new(&catalog.root);
-        let no_extra: &[String] = &[];
-        let scanner = Scanner::new(
-            &self.runner,
-            &self.package,
-            root,
-            &config,
-            no_extra,
-            config.compile_rules()?,
-        );
         let act = catalog.acts().latest(rel).cloned();
-        let entry = scanner.rederive(root, rel, act.as_ref())?;
+
+        // A binding act answers on the owner's word alone, so it needs no
+        // evidence. Skipping the scanner also skips the per-manager package
+        // probes and the Rhai compile that constructing one would cost a
+        // `teach` for nothing.
+        let entry = match act.as_ref().filter(|a| a.kind.is_binding()) {
+            Some(act) => scan::entry_from_act(rel, act, &root.join(rel)),
+            None => {
+                let config = Config::load(&self.store.config_file())?;
+                let no_extra: &[String] = &[];
+                let scanner = Scanner::new(
+                    &self.runner,
+                    &self.package,
+                    root,
+                    &config,
+                    no_extra,
+                    config.compile_rules()?,
+                );
+                scanner.rederive(root, rel, act.as_ref())?
+            }
+        };
         let mut next = catalog.clone();
         next.upsert(entry)?;
         Ok(next)

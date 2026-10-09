@@ -84,6 +84,50 @@ impl<'a> Provenance<'a> {
     }
 }
 
+/// The entry an owner act pins, built without consulting provenance.
+///
+/// An act is the owner's word, so the answer does not depend on what the machine
+/// can prove — but `present`, `size` and `modified` are facts about the
+/// filesystem, not about the verdict, and they come from the lstat here rather
+/// than from a constructor's hardcoded value. That split is the bug in issue #56:
+/// `cmd_teach` invented `present: false` for an absent path while
+/// `cmd_withdraw` went through the scanner and got `present: true`, because two
+/// owners of one rule disagreed about which half comes from where.
+pub fn entry_from_act(rel: &str, act: &crate::act::Act, abs: &Path) -> FileEntry {
+    let meta = std::fs::symlink_metadata(abs).ok();
+    let size = meta.as_ref().map(|m| m.len() as i64).unwrap_or(0);
+    let modified = meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .map(iso_timestamp)
+        .unwrap_or_default();
+    let category = classify(rel);
+    match act.kind {
+        ActKind::Teach => {
+            let method = act.method.clone().unwrap_or_default();
+            let mut e = FileEntry::new_restorable(
+                rel.to_string(),
+                category,
+                method,
+                Source::UserSupplied,
+                Origin::Owner,
+                size,
+                modified,
+            );
+            e.present = meta.is_some();
+            e
+        }
+        ActKind::Dispose => {
+            let mut e =
+                FileEntry::new_disposable(rel.to_string(), category, Origin::Owner, size, modified);
+            e.present = meta.is_some();
+            e
+        }
+        // A withdraw binds nothing; the caller must fall through to evidence.
+        ActKind::Withdraw => FileEntry::new_unknown(rel.to_string(), category, size, modified),
+    }
+}
+
 /// Scans a root into a set of catalog entries.
 pub struct Scanner<'a> {
     provenance: Provenance<'a>,
@@ -142,12 +186,10 @@ impl<'a> Scanner<'a> {
             if out.iter().any(|e| e.path == *path) {
                 continue;
             }
-            let Some(method) = &act.method else { continue };
-            out.push(FileEntry::new_absent_restorable(
-                (*path).to_string(),
-                classify(path),
-                method.clone(),
-            ));
+            if act.method.is_none() {
+                continue;
+            }
+            out.push(entry_from_act(path, act, &root_abs.join(path)));
         }
         out.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(out)
@@ -187,31 +229,10 @@ impl<'a> Scanner<'a> {
 
         // 2. The owner's newest act governs, and it beats every automatic answer
         //    below. A rescan re-applies the log rather than replacing it.
-        match act.map(|a| a.kind) {
-            Some(ActKind::Teach) => {
-                let method = act.and_then(|a| a.method.clone()).unwrap_or_default();
-                return Ok(FileEntry::new_restorable(
-                    rel.to_string(),
-                    category,
-                    method,
-                    Source::UserSupplied,
-                    Origin::Owner,
-                    size,
-                    modified,
-                ));
-            }
-            Some(ActKind::Dispose) => {
-                return Ok(FileEntry::new_disposable(
-                    rel.to_string(),
-                    category,
-                    Origin::Owner,
-                    size,
-                    modified,
-                ));
-            }
-            // A withdraw releases the path: fall through and re-derive.
-            Some(ActKind::Withdraw) | None => {}
+        if let Some(a) = act.filter(|a| a.kind.is_binding()) {
+            return Ok(entry_from_act(rel, a, &abs));
         }
+        // A withdraw releases the path: fall through and re-derive.
 
         // One probe, two readers. The package rung of the provenance chain and the
         // rule's `package` fact are the same question, asked once.

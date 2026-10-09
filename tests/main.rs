@@ -15,6 +15,7 @@ mod bug_regressions_document_open_issues_tests;
 mod cli_tests;
 mod harness;
 mod mock_providers;
+mod one_rule_one_owner_tests;
 mod owner_decisions_survive_a_rescan_tests;
 mod package_provenance_through_the_real_path_tests;
 mod provenance_order_is_package_then_git_then_symlink_tests;
@@ -27,6 +28,7 @@ const DECLARED: &[&str] = &[
     "bug_regressions_document_open_issues_tests",
     "cli_tests",
     "mock_providers",
+    "one_rule_one_owner_tests",
     "owner_decisions_survive_a_rescan_tests",
     "package_provenance_through_the_real_path_tests",
     "provenance_order_is_package_then_git_then_symlink_tests",
