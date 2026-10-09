@@ -127,11 +127,29 @@ impl App {
     /// nothing downstream ever holds what the owner typed (issue #34).
     pub fn scan(&self, root: &Path, extra_ignore: &[String]) -> Result<Catalog> {
         let root = canonical_scan_root(root)?;
-        let config = Config::load(&self.store.config_file())?;
-        let acts = self
-            .load_catalog()
+        let existing = self.load_catalog().ok();
+        let acts = existing
+            .as_ref()
             .map(|c| c.acts().clone())
             .unwrap_or_default();
+        if let Some(c) = &existing {
+            let recorded = Path::new(&c.root);
+            // Compare canonicalized forms: the recorded root is already
+            // canonical, but an older catalog may hold a spelling that is the
+            // same directory by another name.
+            if recorded != root.as_path()
+                && std::fs::canonicalize(recorded).unwrap_or_else(|_| recorded.to_path_buf())
+                    != root.as_path()
+            {
+                return Err(Error::Refused(format!(
+                    "this catalog describes {}; scanning {} would replace it and \
+                     every recipe it holds. Use a separate store (`--config-dir \
+                     <dir>`) for a second tree",
+                    c.root, root.display()
+                )));
+            }
+        }
+        let config = Config::load(&self.store.config_file())?;
         let scanner = Scanner::new(
             &self.runner,
             &self.package,

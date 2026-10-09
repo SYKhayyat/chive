@@ -263,7 +263,6 @@ fn a_stale_derived_index_is_never_read_as_the_catalog() {
 /// nonexistent root must fail, and scanning a different root must leave the
 /// prior catalog's entries in place.
 #[test]
-#[ignore = "issue #32 — scan silently clobbers the existing catalog"]
 fn bug_32_scan_never_clobbers_an_existing_catalog() {
     let env = Env::new("bug32_clobber");
     env.put(".bashrc", "b");
