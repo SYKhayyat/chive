@@ -404,7 +404,6 @@ fn bug_35_migration_flow_restores_into_home() {
 /// Issue #36 — the hostname is detected from the kernel, not from an env var
 /// that non-interactive shells never export.
 #[test]
-#[ignore = "issue #36 — hostname() reads only $HOSTNAME"]
 #[cfg(unix)]
 fn bug_36_hostname_is_detected_without_env() {
     let env = Env::new("bug36_host");

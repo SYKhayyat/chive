@@ -205,12 +205,42 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// Best-effort hostname; never fails.
+/// The hostname that produced a catalog, for the `host` column.
+///
+/// Asked of the kernel, not of `$HOSTNAME`: that variable is exported by
+/// interactive shells only, so a catalog written from a script, a timer, or a
+/// container recorded `host = "unknown"` and lost the one field that says which
+/// machine a catalog describes (issue #36).
+///
+/// Falls back to `$HOSTNAME` if the syscall somehow fails, then to
+/// `"unknown"` — never fails, because a missing hostname must not stop a scan.
 fn hostname() -> String {
-    std::env::var("HOSTNAME")
-        .ok()
+    gethostname()
+        .or_else(|| std::env::var("HOSTNAME").ok())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// `gethostname(2)`. `None` if the call fails or the answer is not UTF-8.
+#[cfg(unix)]
+fn gethostname() -> Option<String> {
+    // The buffer is a fixed 256 bytes: the Linux limit is 64 for the name
+    // itself, and POSIX allows 255. Retry on truncation rather than hand
+    // back a name that has been cut.
+    let mut buf = vec![0u8; 256];
+    // SAFETY: `buf` is exactly `buf.len()` bytes and the kernel writes no more
+    // than the limit above, well inside it.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8(buf[..end].to_vec()).ok()
+}
+
+#[cfg(not(unix))]
+fn gethostname() -> Option<String> {
+    None
 }
 
 #[cfg(test)]
