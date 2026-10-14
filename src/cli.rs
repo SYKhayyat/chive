@@ -523,7 +523,11 @@ fn record_act(app: &App, act: Act) -> Result<Catalog> {
 
 fn cmd_teach(app: &App, path: &str, method: &str) -> Result<i32> {
     record_act(app, Act::teach(0, path, method))?;
+    let in_catalog = app.load_catalog().map(|c| c.by_path(path).is_some()).unwrap_or(false);
     println!("taught: {path}");
+    if !in_catalog {
+        println!("  not in catalog — recipe stored for a future scan");
+    }
     println!("  method: {method}");
     Ok(0)
 }
